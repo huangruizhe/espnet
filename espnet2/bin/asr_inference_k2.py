@@ -104,12 +104,12 @@ def get_texts(best_paths: k2.Fsa) -> List[List[int]]:
 
     if isinstance(best_paths.aux_labels, k2.RaggedTensor):
         aux_labels = best_paths.aux_labels.remove_values_leq(0)
-        aux_shape = best_paths.arcs.shape().compose(aux_labels.shape())
+        aux_shape = best_paths.arcs.shape().compose(aux_labels.shape)
 
         # remove the states and arcs axes.
         aux_shape = aux_shape.remove_axis(1)
         aux_shape = aux_shape.remove_axis(1)
-        aux_labels = k2.RaggedTensor(aux_shape, aux_labels.values())
+        aux_labels = k2.RaggedTensor(aux_shape, aux_labels.values)
     else:
         # remove axis corresponding to states.
         aux_shape = best_paths.arcs.shape().remove_axis(1)
@@ -168,9 +168,11 @@ class k2Speech2Text:
         am_weight: float = 1.0,
         decoder_weight: float = 0.5,
         nnlm_weight: float = 1.0,
+        ngram_weight: float = 0.0,
         num_paths: int = 1000,
         nbest_batch_size: int = 500,
         nll_batch_size: int = 100,
+        decode_graph_config: dict = None,
     ):
         assert check_argument_types()
 
@@ -195,9 +197,20 @@ class k2Speech2Text:
 
         assert self.is_ctc_decoding, "Currently, only ctc_decoding graph is supported."
         if self.is_ctc_decoding:
-            self.decode_graph = k2.arc_sort(
-                build_ctc_topo(list(range(len(token_list))))
-            )
+            # self.decode_graph = k2.arc_sort(
+            #     build_ctc_topo(list(range(len(token_list))))
+            # )
+            self.decode_graph = self.load_decode_graph(decode_graph_config)
+            
+            id2word = dict()
+            with open(decode_graph_config.get("words", None), 'r') as fin:
+                for line in fin:
+                    fields = line.strip().split()
+                    word = fields[0]
+                    wid = int(fields[1])
+                    id2word[wid] = word
+            logging.info("len(id2word)=%d" % len(id2word))
+            self.symbol_table = id2word
 
         self.decode_graph = self.decode_graph.to(device)
         if token_type is None:
@@ -237,10 +250,30 @@ class k2Speech2Text:
         self.nbest_batch_size = nbest_batch_size
         self.nll_batch_size = nll_batch_size
 
+    def load_decode_graph(
+        self,
+        config: dict,
+    ) -> k2.Fsa:
+        logging.info(f"Decode graph params : {config}")  # vars(config)
+
+        if config.get("graph", None) is not None and Path(config["graph"]).is_file():
+            logging.info(f"Loading graph from: " + config["graph"])
+            decode_graph = k2.Fsa.from_dict(
+                torch.load(config["graph"])
+            )
+        else:
+            logging.error("Decoding graph does not exist")
+            exit(1)
+
+        logging.info(f"Decode_graph #states #arcs : {decode_graph.shape[0]} {decode_graph.num_arcs}")
+
+        decode_graph.scores *= config.get("lm_weight", 1)
+        return decode_graph
+
     @torch.no_grad()
     def __call__(
         self, batch: Dict[str, Union[torch.Tensor, np.ndarray]]
-    ) -> List[Tuple[Optional[str], List[str], List[int], float]]:
+    ) -> List[Tuple[Optional[str], Optional[List[str]], List[int], float]]:
         """Inference
 
         Args:
@@ -421,10 +454,20 @@ class k2Speech2Text:
             # For decoding methods nbest_rescoring and ctc_decoding
             # hyps stores token_index, which is lattice.labels.
 
-            # convert token_id to text with self.tokenizer
-            token = self.converter.ids2tokens(token_int)
-            assert self.tokenizer is not None
-            text = self.tokenizer.tokens2text(token)
+            if self.use_nbest_rescoring:
+                # convert token_id to text with self.tokenizer
+                token = self.converter.ids2tokens(token_int)
+                assert self.tokenizer is not None
+                text = self.tokenizer.tokens2text(token)
+            else:
+                # For decoding methods with TLG and 4-gram lattice rescoing,
+                # what hyps contains is already word_index,
+                # which is lattice.aux_labels.
+                # So tokenizizer is not needed.
+                token = None
+                text = " ".join(
+                    [self.symbol_table.get(word_idx) for word_idx in token_int]
+                )
             results.append((text, token, token_int, score))
 
         assert check_return_type(results)
@@ -577,12 +620,19 @@ def inference(
                 key = keys[key_idx]
                 best_writer = writer["1best_recog"]
                 # Write the result to each file
-                best_writer["token"][key] = " ".join(token)
+                if token is not None:
+                    best_writer["token"][key] = " ".join(token)
+                else:
+                    best_writer["token"][key] = ""
+
                 best_writer["token_int"][key] = " ".join(map(str, token_int))
                 best_writer["score"][key] = str(score)
 
                 if text is not None:
                     best_writer["text"][key] = text
+                    logging.info(f"{key} {text}")                        
+                else:
+                    best_writer["text"][key] = ""
 
         end_decoding_time = datetime.datetime.now()
         decoding_duration = end_decoding_time - start_decoding_time
