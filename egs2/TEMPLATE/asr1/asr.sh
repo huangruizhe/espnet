@@ -263,6 +263,8 @@ fi
 . ./path.sh
 . ./cmd.sh
 
+inference_tag=${inference_tag// /_}
+
 
 # Check required arguments
 [ -z "${train_set}" ] && { log "${help_message}"; log "Error: --train_set is required"; exit 2; };
@@ -283,6 +285,7 @@ else
     log "Error: not supported: --feats_type ${feats_type}"
     exit 2
 fi
+echo data_feats=$data_feats
 
 # Use the same text as ASR for bpe training if not specified.
 [ -z "${bpe_train_text}" ] && bpe_train_text="${data_feats}/${train_set}/text"
@@ -435,6 +438,7 @@ if [ -z "${inference_tag}" ]; then
       inference_tag+="_use_nbest_rescoring_${use_nbest_rescoring}"
     fi
 fi
+log "inference_tag = $inference_tag"
 
 # ========================== Main stages start from here. ==========================
 
@@ -479,7 +483,8 @@ if ! "${skip_data_prep}"; then
             # If nothing is need, then format_wav_scp.sh does nothing:
             # i.e. the input file format and rate is same as the output.
 
-            for dset in "${train_set}" "${valid_set}" ${test_sets}; do
+            for dset in ${test_sets}; do
+                echo $dset
                 if [ "${dset}" = "${train_set}" ] || [ "${dset}" = "${valid_set}" ]; then
                     _suf="/org"
                 else
@@ -1123,31 +1128,40 @@ fi
 
 
 if [ -n "${download_model}" ]; then
+    download_model_original=$download_model
+    #download_model=${download_model// /_}
     log "Use ${download_model} for decoding and evaluation"
     asr_exp="${expdir}/${download_model}"
+    asr_exp=${asr_exp// /_}
     mkdir -p "${asr_exp}"
 
     # If the model already exists, you can skip downloading
-    espnet_model_zoo_download --unpack true "${download_model}" > "${asr_exp}/config.txt"
+    # espnet_model_zoo_download --unpack true "${download_model}" > "${asr_exp}/config.txt"
 
     # Get the path of each file
     _asr_model_file=$(<"${asr_exp}/config.txt" sed -e "s/.*'asr_model_file': '\([^']*\)'.*$/\1/")
     _asr_train_config=$(<"${asr_exp}/config.txt" sed -e "s/.*'asr_train_config': '\([^']*\)'.*$/\1/")
 
+    log $_asr_model_file
+    log $_asr_train_config
+
     # Create symbolic links
-    ln -sf "${_asr_model_file}" "${asr_exp}"
-    ln -sf "${_asr_train_config}" "${asr_exp}"
+    # ln -sf "${_asr_model_file}" "${asr_exp}"
+    # ln -sf "${_asr_train_config}" "${asr_exp}"
     inference_asr_model=$(basename "${_asr_model_file}")
 
     if [ "$(<${asr_exp}/config.txt grep -c lm_file)" -gt 0 ]; then
         _lm_file=$(<"${asr_exp}/config.txt" sed -e "s/.*'lm_file': '\([^']*\)'.*$/\1/")
         _lm_train_config=$(<"${asr_exp}/config.txt" sed -e "s/.*'lm_train_config': '\([^']*\)'.*$/\1/")
 
-        lm_exp="${expdir}/${download_model}/lm"
-        mkdir -p "${lm_exp}"
+        log $_lm_file
+        log $_lm_train_config
 
-        ln -sf "${_lm_file}" "${lm_exp}"
-        ln -sf "${_lm_train_config}" "${lm_exp}"
+        lm_exp="${expdir}/${download_model}/lm"
+        # mkdir -p "${lm_exp}"
+
+        # ln -sf "${_lm_file}" "${lm_exp}"
+        # ln -sf "${_lm_train_config}" "${lm_exp}"
         inference_lm=$(basename "${_lm_file}")
     fi
 
@@ -1205,9 +1219,12 @@ if ! "${skip_eval}"; then
           fi
         fi
 
+        #inference_tag=${inference_tag// /_}
+        #echo inference_tag=$inference_tag
         for dset in ${test_sets}; do
             _data="${data_feats}/${dset}"
             _dir="${asr_exp}/${inference_tag}/${dset}"
+            #echo "heheh" $_dir
             _logdir="${_dir}/logdir"
             mkdir -p "${_logdir}"
 
@@ -1229,15 +1246,17 @@ if ! "${skip_eval}"; then
             split_scps=""
             if "${use_k2}"; then
               # Now only _nj=1 is verified if using k2
-              _nj=1
+              # _nj=1
+              _nj=$(min "${inference_nj}" "$(<${key_file} wc -l)")
             else
               _nj=$(min "${inference_nj}" "$(<${key_file} wc -l)")
             fi
 
             for n in $(seq "${_nj}"); do
-                split_scps+=" ${_logdir}/keys.${n}.scp"
+                split_scps+=" ${_logdir// /_}/keys.${n}.scp"
             done
             # shellcheck disable=SC2086
+            # echo here utils/split_scp.pl "${key_file}" ${split_scps}
             utils/split_scp.pl "${key_file}" ${split_scps}
 
             # 2. Submit decoding jobs
@@ -1252,7 +1271,7 @@ if ! "${skip_eval}"; then
                     --asr_train_config "${asr_exp}"/config.yaml \
                     --asr_model_file "${asr_exp}"/"${inference_asr_model}" \
                     --output_dir "${_logdir}"/output.JOB \
-                    ${_opts} ${inference_args}
+                    ${_opts//ai Zh/ai_Zh} ${inference_args}
 
             # 3. Concatenates the output files from each jobs
             for f in token token_int score text; do
@@ -1277,7 +1296,8 @@ if ! "${skip_eval}"; then
             _data="${data_feats}/${dset}"
             _dir="${asr_exp}/${inference_tag}/${dset}"
 
-            for _type in cer wer ter; do
+            # for _type in cer wer ter; do
+            for _type in wer; do
                 [ "${_type}" = ter ] && [ ! -f "${bpemodel}" ] && continue
 
                 _scoredir="${_dir}/score_${_type}"
@@ -1296,6 +1316,14 @@ if ! "${skip_eval}"; then
                                   ) \
                         <(<"${_data}/utt2spk" awk '{ print "(" $2 "-" $1 ")" }') \
                             >"${_scoredir}/ref.trn"
+                    mv "${_scoredir}/ref.trn" "${_scoredir}/ref.trn.orig"
+                    # sed -i -E "s|^\*\*(.+)\*\*|\1|g" "${_scoredir}/ref.trn"
+                    cat "${_scoredir}/ref.trn.orig" | \
+                        sed -E "s|^\*\*(.+)\*\*|\1|g" - | \
+                        sed -E "s|\[.+\]||g" - | \
+                        sed -E "s|^%[^ ]* ||g" - | \
+                        sed -E "s|^\{.+\}||g" - | \
+                        sed -E "s|\\\\.+\\\\||g" - > "${_scoredir}/ref.trn"
 
                     # NOTE(kamo): Don't use cleaner for hyp
                     paste \
@@ -1362,6 +1390,12 @@ if ! "${skip_eval}"; then
 
                 fi
 
+                log "sclite \
+		    ${score_opts} \
+                    -r \"${_scoredir}/ref.trn\" trn \
+                    -h \"${_scoredir}/hyp.trn\" trn \
+                    -i rm -o all stdout > \"${_scoredir}/result.txt\""
+
                 sclite \
 		    ${score_opts} \
                     -r "${_scoredir}/ref.trn" trn \
@@ -1374,10 +1408,12 @@ if ! "${skip_eval}"; then
         done
 
         [ -f local/score.sh ] && local/score.sh ${local_score_opts} "${asr_exp}"
+        log "Done score.sh"
 
         # Show results in Markdown syntax
         scripts/utils/show_asr_result.sh "${asr_exp}" > "${asr_exp}"/RESULTS.md
-        cat "${asr_exp}"/RESULTS.md
+        #echo scripts/utils/show_asr_result.sh "${asr_exp}" \> "${asr_exp}"/RESULTS.md
+        # cat "${asr_exp}"/RESULTS.md
 
     fi
 else

@@ -97,6 +97,13 @@ class Speech2Text:
             length_bonus=LengthBonus(len(token_list)),
         )
 
+        # save token_list
+        # token_list_path = "/export/fs04/a12/rhuang/espnet/egs2/swbd/asr1/data/token_list/bpe_unigram2000/lm/tokens.txt"
+        # with open(token_list_path, "w") as fout:
+        #     for tid, token in enumerate(token_list):
+        #         print(f"{token} {tid}", file=fout)
+        # exit(0)
+
         # 2. Build Language model
         if lm_train_config is not None:
             lm, lm_train_args = LMTask.build_model_from_file(
@@ -270,6 +277,10 @@ class Speech2Text:
                 token_int = hyp.yseq[1:last_pos]
             else:
                 token_int = hyp.yseq[1:last_pos].tolist()
+            
+            # remove redundant eos symbols
+            while len(token_int) > 0 and token_int[-1] == self.beam_search.eos:
+                token_int = token_int[:-1]
 
             # remove blank symbol id, which is assumed to be 0
             token_int = list(filter(lambda x: x != 0, token_int))
@@ -315,6 +326,16 @@ class Speech2Text:
             kwargs.update(**d.download_and_unpack(model_tag))
 
         return Speech2Text(**kwargs)
+
+
+def get_scorer_details(hyp_scores, hyp_token_scores_seperate):
+    output_str = ""
+    keys = [k for k, _ in hyp_scores.items()]
+    output_str += "(" + " ".join([f"{k}:{hyp_scores[k]:.4f}" for k in keys]) + ")"
+    for tss in hyp_token_scores_seperate:
+        output_str += ",(" + " ".join([f"{tss[k]:.4f}" for k in keys] + [f"{tss[k]:.4f}" for k in ["ac", "all"]]) + ")"
+    return output_str
+
 
 
 def inference(
@@ -437,7 +458,8 @@ def inference(
                 # Write the result to each file
                 ibest_writer["token"][key] = " ".join(token)
                 ibest_writer["token_int"][key] = " ".join(map(str, token_int))
-                ibest_writer["score"][key] = str(hyp.score)
+                ibest_writer["score"][key] = str(hyp.score) + " " + " ".join(map(lambda x: "%.4f" % float(x), hyp.token_scores))
+                ibest_writer["score_details"][key] = get_scorer_details(hyp.scores, hyp.token_scores_seperate)
 
                 if text is not None:
                     ibest_writer["text"][key] = text
