@@ -77,6 +77,7 @@ class Speech2Text:
         penalty: float = 0.0,
         nbest: int = 1,
         streaming: bool = False,
+        temperature: float = 1.0,
     ):
         assert check_argument_types()
 
@@ -156,6 +157,8 @@ class Speech2Text:
                 token_list=token_list,
                 pre_beam_score_key=None if ctc_weight == 1.0 else "full",
             )
+            beam_search.temperature = temperature
+            logging.info(f"beam_search.temperature = {beam_search.temperature}")
 
             # TODO(karita): make all scorers batchfied
             if batch_size == 1:
@@ -164,6 +167,7 @@ class Speech2Text:
                     for k, v in beam_search.full_scorers.items()
                     if not isinstance(v, BatchScorerInterface)
                 ]
+                # non_batch = [None]  # Ruizhe: disable batch_beam_search
                 if len(non_batch) == 0:
                     if streaming:
                         beam_search.__class__ = BatchBeamSearchOnlineSim
@@ -369,6 +373,7 @@ def inference(
     allow_variable_data_keys: bool,
     transducer_conf: Optional[dict],
     streaming: bool,
+    temperature: float,
 ):
     assert check_argument_types()
     if batch_size > 1:
@@ -412,6 +417,7 @@ def inference(
         penalty=penalty,
         nbest=nbest,
         streaming=streaming,
+        temperature=temperature,
     )
     speech2text = Speech2Text.from_pretrained(
         model_tag=model_tag,
@@ -563,6 +569,7 @@ def get_parser():
         help="The batch size for inference",
     )
     group.add_argument("--nbest", type=int, default=1, help="Output N-best hypotheses")
+    group.add_argument("--temperature", type=float, default=1.0, help="Reciprocal of temperature for stochastic beam search")
     group.add_argument("--beam_size", type=int, default=20, help="Beam size")
     group.add_argument("--penalty", type=float, default=0.0, help="Insertion penalty")
     group.add_argument(

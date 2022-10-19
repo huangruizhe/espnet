@@ -1,0 +1,1 @@
+/export/fs04/a12/rhuang/kaldi_ruizhe/kaldi/egs/std2006/s5/local/score_kaldi_light.sh

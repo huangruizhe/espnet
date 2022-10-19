@@ -6,7 +6,7 @@ set -u
 set -o pipefail
 
 norm="" # or "_unnorm"
-norm="_unnorm"
+# norm="_unnorm"
 train_set=train_nodev${norm}
 valid_set=dev_4k${norm}
 test_sets="dev_4k${norm} val${norm}"
@@ -22,8 +22,8 @@ speed_perturb_factors=""
 # NOTE: The default settings require 4 GPUs with 32 GB memory
 ./asr.sh \
     --ngpu 4 \
-    --nj 128 \
-    --inference_nj 256 \
+    --nj 32 \
+    --inference_nj 32 \
     --dumpdir dump${norm} \
     --expdir exp${norm} \
     --lang en${norm} \

@@ -1,0 +1,14 @@
+blank_bias: -0.4
+decode_graph_config:
+  graph: /export/fs04/a12/rhuang/espnet/egs2/swbd/asr1/data/lang_bpe_2000_large/HLG.pt
+  graph_save_path: /export/fs04/a12/rhuang/espnet/egs2/swbd/asr1/data/lang_bpe_2000_large/HLG.pt
+  lm_weight: 0.8
+  words: /export/fs04/a12/rhuang/espnet/egs2/swbd/asr1/data/lang_bpe_2000_large/words.txt
+decoder_weight: 0.5
+lattice_weight: 1.0
+max_active_states: 10000
+min_active_states: 30
+ngram_weight: 0.0
+nnlm_weight: 0.5
+output_beam_size: 20
+search_beam_size: 20

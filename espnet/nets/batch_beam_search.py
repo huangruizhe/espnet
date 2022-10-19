@@ -4,11 +4,14 @@ import logging
 from typing import Any
 from typing import Dict
 from typing import List
+from typing import Union
 from typing import NamedTuple
 from typing import Tuple
 
 import torch
 from torch.nn.utils.rnn import pad_sequence
+import torch.nn.functional as F
+
 
 from espnet.nets.beam_search import BeamSearch
 from espnet.nets.beam_search import Hypothesis
@@ -22,6 +25,8 @@ class BatchHypothesis(NamedTuple):
     length: torch.Tensor = torch.tensor([])  # (batch,)
     scores: Dict[str, torch.Tensor] = dict()  # values: (batch,)
     states: Dict[str, Dict] = dict()
+    token_scores: List[List[Union[float, torch.Tensor]]] = list()
+    token_scores_seperate: List[List[Dict[str, Union[float, torch.Tensor]]]] = list()
 
     def __len__(self) -> int:
         """Return a batch size."""
@@ -43,6 +48,8 @@ class BatchBeamSearch(BeamSearch):
             score=torch.tensor([h.score for h in hyps]),
             scores={k: torch.tensor([h.scores[k] for h in hyps]) for k in self.scorers},
             states={k: [h.states[k] for h in hyps] for k in self.scorers},
+            token_scores=[h.token_scores for h in hyps],
+            token_scores_seperate=[h.token_scores_seperate for h in hyps],
         )
 
     def _batch_select(self, hyps: BatchHypothesis, ids: List[int]) -> BatchHypothesis:
@@ -55,6 +62,8 @@ class BatchBeamSearch(BeamSearch):
                 k: [self.scorers[k].select_state(v, i) for i in ids]
                 for k, v in hyps.states.items()
             },
+            token_scores=[hyps.token_scores[i] for i in ids],
+            token_scores_seperate=[hyps.token_scores_seperate[i] for i in ids],
         )
 
     def _select(self, hyps: BatchHypothesis, i: int) -> Hypothesis:
@@ -65,6 +74,8 @@ class BatchBeamSearch(BeamSearch):
             states={
                 k: self.scorers[k].select_state(v, i) for k, v in hyps.states.items()
             },
+            token_scores=hyps.token_scores[i],
+            token_scores_seperate=hyps.token_scores_seperate[i],
         )
 
     def unbatchfy(self, batch_hyps: BatchHypothesis) -> List[Hypothesis]:
@@ -78,6 +89,8 @@ class BatchBeamSearch(BeamSearch):
                     k: v.select_state(batch_hyps.states[k], i)
                     for k, v in self.scorers.items()
                 },
+                token_scores=batch_hyps.token_scores[i],
+                token_scores_seperate=batch_hyps.token_scores_seperate[i],
             )
             for i in range(len(batch_hyps.length))
         ]
@@ -100,7 +113,26 @@ class BatchBeamSearch(BeamSearch):
                 Their shapes are all `(self.beam_size,)`
 
         """
-        top_ids = weighted_scores.view(-1).topk(self.beam_size)[1]
+        # argmax top-k
+        # top_ids = weighted_scores.view(-1).topk(self.beam_size)[1]
+
+        # sample k items (stochastic beam search)
+        # temperature = 1.2
+        # try:
+        #     weights = torch.softmax(weighted_scores.view(-1) * temperature)
+        # except:
+        #     print(f"weighted_scores.view(-1) = {weighted_scores.view(-1)}")
+        #     print(f"torch.sum(weighted_scores.view(-1)) = {torch.sum(weighted_scores.view(-1))}")
+        #     print(f"torch.sum(torch.exp(weighted_scores.view(-1) * temperature)) = {torch.sum(torch.exp(weighted_scores.view(-1) * temperature))}")
+        #     exit(1)
+        # top_ids = torch.multinomial(weights, self.beam_size)
+        T = self.temperature
+        weights = F.softmax(weighted_scores.view(-1) * T, dim=0)
+        top_ids = torch.multinomial(weights, self.beam_size)
+
+        # interpolation
+        # TODO
+
         # Because of the flatten above, `top_ids` is organized as:
         # [hyp1 * V + token1, hyp2 * V + token2, ..., hypK * V + tokenK],
         # where V is `self.n_vocab` and K is `self.beam_size`
@@ -255,17 +287,30 @@ class BatchBeamSearch(BeamSearch):
             part_new_token_id,
         ) in zip(*self.batch_beam(weighted_scores, part_ids)):
             prev_hyp = prev_hyps[full_prev_hyp_id]
+
+            new_scores = self.merge_scores(
+                prev_hyp.scores,
+                {k: v[full_prev_hyp_id] for k, v in scores.items()},
+                full_new_token_id,
+                {k: v[part_prev_hyp_id] for k, v in part_scores.items()},
+                part_new_token_id,
+            )
+            my_token_scores_seperate = dict()
+            for k, v in new_scores.items():
+                new_word_score_k = v - prev_hyp.scores[k]
+                my_token_scores_seperate[k] = new_word_score_k
+
+            # Compute the normalization terms for the loglinear interpolation.
+            # This is hard-wired to a specific setting. Please be careful when changing to another model
+            ac = scores['decoder'][full_prev_hyp_id] * self.weights['decoder'] + part_scores['ctc'][part_prev_hyp_id] * self.weights['ctc']
+            my_token_scores_seperate["ac"] = torch.exp(ac).sum().log()
+            my_token_scores_seperate["all"] = torch.exp(ac + scores['lm'][full_prev_hyp_id] * self.weights['lm']).sum().log()
+
             best_hyps.append(
                 Hypothesis(
                     score=weighted_scores[full_prev_hyp_id, full_new_token_id],
                     yseq=self.append_token(prev_hyp.yseq, full_new_token_id),
-                    scores=self.merge_scores(
-                        prev_hyp.scores,
-                        {k: v[full_prev_hyp_id] for k, v in scores.items()},
-                        full_new_token_id,
-                        {k: v[part_prev_hyp_id] for k, v in part_scores.items()},
-                        part_new_token_id,
-                    ),
+                    scores=new_scores,
                     states=self.merge_states(
                         {
                             k: self.full_scorers[k].select_state(v, full_prev_hyp_id)
@@ -279,6 +324,8 @@ class BatchBeamSearch(BeamSearch):
                         },
                         part_new_token_id,
                     ),
+                    token_scores=prev_hyp.token_scores + [weighted_scores[full_prev_hyp_id, full_new_token_id] - prev_hyp.score],
+                    token_scores_seperate=prev_hyp.token_scores_seperate + [my_token_scores_seperate],
                 )
             )
         return self.batchfy(best_hyps)

@@ -23,6 +23,8 @@ class Hypothesis(NamedTuple):
     score: Union[float, torch.Tensor] = 0
     scores: Dict[str, Union[float, torch.Tensor]] = dict()
     states: Dict[str, Any] = dict()
+    token_scores: List[Union[float, torch.Tensor]] = list()
+    token_scores_seperate: List[Dict[str, Union[float, torch.Tensor]]] = list()
 
     def asdict(self) -> dict:
         """Convert data to JSON-friendly dict."""
@@ -109,6 +111,8 @@ class BeamSearch(torch.nn.Module):
             and self.pre_beam_size < self.n_vocab
             and len(self.part_scorers) > 0
         )
+
+        self.temperature = 1.0  # for stochastic beam search
 
     def init_hyp(self, x: torch.Tensor) -> List[Hypothesis]:
         """Get an initial hypothesis data.
@@ -293,7 +297,7 @@ class BeamSearch(torch.nn.Module):
         """
         best_hyps = []
         part_ids = torch.arange(self.n_vocab, device=x.device)  # no pre-beam
-        for hyp in running_hyps:
+        for hyp in running_hyps:    # accumulated in this 
             # scoring
             weighted_scores = torch.zeros(self.n_vocab, dtype=x.dtype, device=x.device)
             scores, states = self.score_full(hyp, x)
@@ -311,19 +315,31 @@ class BeamSearch(torch.nn.Module):
             for k in self.part_scorers:
                 weighted_scores[part_ids] += self.weights[k] * part_scores[k]
             # add previous hyp score
-            weighted_scores += hyp.score
+            weighted_scores += hyp.score   # p( h | x) * (p1(w|h,x), p2(w|h,x), p3(w|h,x))
+
+            # hyp1.score * + hyp2.score + hyp3.score
+
+            # p( h1 | x) p(w | h1) + p( h2 | x) p(w | h2) + ....
 
             # update hyps
             for j, part_j in zip(*self.beam(weighted_scores, part_ids)):
+                new_scores = self.merge_scores(
+                    hyp.scores, scores, j, part_scores, part_j
+                )
+                my_token_scores_seperate = dict()
+                for k, v in new_scores.items():
+                    new_word_score_k = v - hyp.scores[k]
+                    my_token_scores_seperate[k] = new_word_score_k
+
                 # will be (2 x beam at most)
                 best_hyps.append(
                     Hypothesis(
-                        score=weighted_scores[j],
+                        score=weighted_scores[j],   # p(h,w | x) = p( h | x) * p(w|h,x)
                         yseq=self.append_token(hyp.yseq, j),
-                        scores=self.merge_scores(
-                            hyp.scores, scores, j, part_scores, part_j
-                        ),
+                        scores=new_scores,
                         states=self.merge_states(states, part_states, part_j),
+                        token_scores=hyp.token_scores + [weighted_scores[j] - hyp.score],
+                        token_scores_seperate=hyp.token_scores_seperate + [my_token_scores_seperate],
                     )
                 )
 
@@ -331,6 +347,10 @@ class BeamSearch(torch.nn.Module):
             best_hyps = sorted(best_hyps, key=lambda x: x.score, reverse=True)[
                 : min(len(best_hyps), self.beam_size)
             ]
+
+            # sorted_hyps = sorted(best_hyps, key=lambda x: x.score, reverse=True)
+            # temperature = 
+            # best_hyps = 
         return best_hyps
 
     def forward(

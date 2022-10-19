@@ -1,5 +1,6 @@
 from typing import List
 from typing import Tuple
+import logging
 
 import k2
 import math
@@ -119,6 +120,13 @@ def compute_am_scores_and_lm_scores(
     del inverted_lats.aux_labels
     inverted_lats = k2.arc_sort(inverted_lats)
 
+    logging.info("Intersect params:")
+    logging.info(f"batch_size={batch_size}, a_fsas:{inverted_lats.shape, inverted_lats[0].shape, inverted_lats[0].num_arcs}")
+    b_fsa = word_fsas_with_epsilon_loops
+    logging.info(f"b_fsas: {b_fsa.shape}")
+    for i in range(min(1, b_fsa.shape[0])):
+        logging.info(f"b_fsas[{i}], shape:{b_fsa[i].shape}, arcs:{b_fsa[i].num_arcs}")
+
     am_path_lats = _intersect_device(
         inverted_lats,
         word_fsas_with_epsilon_loops,
@@ -167,7 +175,13 @@ def nbest_am_lm_scores(
 
     Compatible with both ctc_decoding or TLG decoding.
     """
+    # we use nbest_scale here
+    nbest_scale = 0.8
+    saved_scores = lats.scores.clone()
+    lats.scores *= nbest_scale
     paths = k2.random_paths(lats, num_paths=num_paths, use_double_scores=True)
+    lats.scores = saved_scores
+
     if isinstance(lats.aux_labels, torch.Tensor):
         word_seqs = k2.ragged.index(lats.aux_labels.contiguous(), paths)
     else:
@@ -203,4 +217,42 @@ def nbest_am_lm_scores(
     token_ids = token_ids.tolist()
     # Now remove repeated tokens and 0s and -1s.
     token_ids = [remove_repeated_and_leq(tokens) for tokens in token_ids]
+
+
+    # Assuming the lattice is for only one utterance
+    # Copied from from_lattice(...) of Nbest class
+    # kept_path, _ = paths.index(new2old, axis=1, need_value_indexes=False)
+    # utt_to_path_shape = kept_path.shape.get_layer(0)
+    # kept_path = kept_path.remove_axis(0)
+    # labels = k2.ragged.index(lats.labels.contiguous(), kept_path)
+    # labels = labels.remove_values_eq(-1)
+    # if isinstance(lats.aux_labels, k2.RaggedTensor):
+    #     aux_labels, _ = lats.aux_labels.index(
+    #         indexes=kept_path.values, axis=0, need_value_indexes=False
+    #     )
+    # else:
+    #     assert isinstance(lats.aux_labels, torch.Tensor)
+    #     aux_labels = k2.index_select(lats.aux_labels, kept_path.values)
+    # fsa = k2.linear_fsa(labels)
+    # fsa.aux_labels = aux_labels
+    # nbest = Nbest(fsa=fsa, shape=utt_to_path_shape)
+
     return am_scores, lm_scores, token_ids, new2old, path_to_seq_map, seq_to_path_splits
+
+    ## From https://github.com/k2-fsa/icefall/blob/1603744469d167d848e074f2ea98c587153205fa/icefall/decode.py#L242
+    # kept_path, _ = paths.index(new2old, axis=1, need_value_indexes=False)
+    # utt_to_path_shape = kept_path.shape.get_layer(0)
+    # kept_path = kept_path.remove_axis(0)
+    # labels = k2.ragged.index(lats.labels.contiguous(), kept_path)
+    # labels = labels.remove_values_eq(-1)
+    # if isinstance(lats.aux_labels, k2.RaggedTensor):
+    #     aux_labels, _ = lats.aux_labels.index(
+    #         indexes=kept_path.values, axis=0, need_value_indexes=False
+    #     )
+    # else:
+    #     assert isinstance(lats.aux_labels, torch.Tensor)
+    #     aux_labels = k2.index_select(lats.aux_labels, kept_path.values)
+    # fsa = k2.linear_fsa(labels)
+    # fsa.aux_labels = aux_labels
+
+    # return am_scores, lm_scores, token_ids, new2old, path_to_seq_map, seq_to_path_splits, (fsa, utt_to_path_shape)

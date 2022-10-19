@@ -7,10 +7,15 @@ set -o pipefail
 
 train_set=train_nodup
 valid_set=train_dev
-test_sets="eval2000"
+# test_sets="eval2000"
+# test_sets="callhome_dev callhome_eval"
+test_sets="callhome_train"
 
 asr_config=conf/train_asr.yaml
 inference_config=conf/decode_asr.yaml
+# inference_config=conf/decode_asr_nolm.yaml
+# inference_config=conf/decode_asr_ctc.yaml
+# inference_config=conf/decode_asr_ctc_lengthbonus.yaml
 lm_config=conf/train_lm.yaml
 
 # speed perturbation related
