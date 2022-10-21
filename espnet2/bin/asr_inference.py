@@ -149,17 +149,7 @@ class Speech2Text:
                 ngram=ngram_weight,
                 length_bonus=penalty,
             )
-            beam_search = BeamSearch(
-                beam_size=beam_size,
-                weights=weights,
-                scorers=scorers,
-                sos=asr_model.sos,
-                eos=asr_model.eos,
-                vocab_size=len(token_list),
-                token_list=token_list,
-                pre_beam_score_key=None if ctc_weight == 1.0 else "full",
-            )
-            # beam_search = StochasticBeamSearch(
+            # beam_search = BeamSearch(
             #     beam_size=beam_size,
             #     weights=weights,
             #     scorers=scorers,
@@ -168,11 +158,21 @@ class Speech2Text:
             #     vocab_size=len(token_list),
             #     token_list=token_list,
             #     pre_beam_score_key=None if ctc_weight == 1.0 else "full",
-            #     temperature=temperature,
-            #     beam_search_mode=beam_search_mode,   
             # )
-            # logging.info(f"beam_search.temperature = {beam_search.temperature}")
-            # logging.info(f"beam_search_mode = {beam_search_mode}")
+            beam_search = StochasticBeamSearch(
+                beam_size=beam_size,
+                weights=weights,
+                scorers=scorers,
+                sos=asr_model.sos,
+                eos=asr_model.eos,
+                vocab_size=len(token_list),
+                token_list=token_list,
+                pre_beam_score_key=None if ctc_weight == 1.0 else "full",
+                temperature=temperature,
+                beam_search_mode=beam_search_mode,   
+            )
+            logging.info(f"beam_search.temperature = {beam_search.temperature}")
+            logging.info(f"beam_search_mode = {beam_search_mode}")
 
             # TODO(karita): make all scorers batchfied
             if batch_size == 1:
@@ -479,7 +479,7 @@ def inference(
                 ibest_writer["token"][key] = " ".join(token)
                 ibest_writer["token_int"][key] = " ".join(map(str, token_int))
                 ibest_writer["score"][key] = str(hyp.score) + " " + " ".join(map(lambda x: "%.4f" % float(x), hyp.token_scores))
-                ibest_writer["score_details"][key] = get_scorer_details(hyp.scores, hyp.token_scores_seperate)
+                # ibest_writer["score_details"][key] = get_scorer_details(hyp.scores, hyp.token_scores_seperate)
 
                 if text is not None:
                     ibest_writer["text"][key] = text

@@ -111,21 +111,23 @@ class StochasticBeamSearch(BeamSearch):
         # Note that: 
         #   - each of the probabilities should sum-to-one, to ensure a valid sampling process
         #   - we sample without replacement by the total prob mass
-        lprobs = torch.zeros((self.beam_size, self.n_vocab))  # device=x.device
-        lprobs_t = torch.zeros((self.beam_size, self.n_vocab))
+        lprobs = torch.zeros((len(running_hyps), self.n_vocab))  # device=x.device
+        lprobs_t = torch.zeros((len(running_hyps), self.n_vocab))
 
         # At any step, the size of running_hyps should be self.beam_size
-        if step == 0 and len(running_hyps) == 1:
-            running_hyps = running_hyps * self.beam_size
+        # if step == 0 and len(running_hyps) == 1:
+        #     lprobs_t[1:, :] = -float('inf')
         things_to_save = []
 
         for i_hyp, hyp in enumerate(running_hyps):
             # Let's compute the score defined by the sequence model.
             # Basically, the weighted_scores can equal to any normalized distribution
             weighted_scores = torch.zeros(self.n_vocab, dtype=x.dtype, device=x.device)
+
             scores, states = self.score_full(hyp, x)
             for k in self.full_scorers:
                 weighted_scores += self.weights[k] * scores[k]
+
             # partial scoring
             if self.do_pre_beam:
                 pre_beam_scores = (
@@ -136,12 +138,15 @@ class StochasticBeamSearch(BeamSearch):
                 part_ids = torch.topk(pre_beam_scores, self.pre_beam_size)[1]
             part_scores, part_states = self.score_partial(hyp, part_ids, x)
             for k in self.part_scorers:
-                weighted_scores[part_ids] += self.weights[k] * part_scores[k]
+                val = part_scores[k].min().item() - 2
+                part_scores_full = torch.full((self.n_vocab,), val, device=part_scores[k].device)
+                part_scores_full[part_ids] = part_scores[k]
+                weighted_scores += self.weights[k] * part_scores_full
 
             # This is cumulative prob for each candidate
-            # weighted_scores_t = F.log_softmax(weighted_scores / self.temperature, dim=-1)
-            weighted_scores_t = weighted_scores
-            lprobs_t[i_hyp] = weighted_scores_t + hyp.score_t
+            # weighted_scores_t = F.log_softmax(weighted_scores / self.temperature, dim=-1)  + hyp.score_t
+            weighted_scores_t = weighted_scores + hyp.score
+            lprobs_t[i_hyp] = weighted_scores_t
 
             things_to_save.append(
                 {
@@ -152,16 +157,13 @@ class StochasticBeamSearch(BeamSearch):
             )
                 
         # let's do the top-k sampling now
-        if step == 0:
-            if self.stochastic:
+        if self.stochastic:
+            if step == 0:    
                 cand_scores = gumbel_like(lprobs_t) + lprobs_t
             else:
-                cand_scores = lprobs_t
-        else:
-            if self.stochastic:
                 cand_scores, _ = gumbel_with_maximum(lprobs_t, hyp.G, -1)
-            else:
-                cand_scores = lprobs_t
+        else:
+            cand_scores = lprobs_t
         
         if self.stochastic or self.topk:
             topk_gs, topk_indices = torch.topk(
@@ -169,12 +171,12 @@ class StochasticBeamSearch(BeamSearch):
                 k=min(
                     # Take the best 2 x beam_size predictions. We'll choose the first
                     # beam_size of these which don't predict eos to continue with.
-                    self.beam_size * 2,  # TODO
-                    cand_scores.view(self.beam_size, -1).size(1) - 1,  # -1 so we never select pad
+                    self.beam_size,  #  * 2 # TODO
+                    cand_scores.view(len(running_hyps), -1).size(1) - 1,  # -1 so we never select pad
                 ),
             )
         elif self.sampling:
-            pass
+            raise NotImplementedError
         else:
             raise NotImplementedError
 
@@ -218,8 +220,8 @@ class StochasticBeamSearch(BeamSearch):
                         token_scores_seperate=hyp.token_scores_seperate + [my_token_scores_seperate],
                     )
                 )
-                if np.isnan(best_hyps[-1].states["ctc"][1].sum()):
-                    logging.error("here")
+                # if np.isnan(best_hyps[-1].states["ctc"][1].sum()):
+                #     logging.error("here")
 
         # sort and prune 2 x beam -> beam
         best_hyps = sorted(best_hyps, key=lambda x: x.score, reverse=True)[

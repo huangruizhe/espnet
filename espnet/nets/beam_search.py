@@ -8,6 +8,7 @@ from typing import List
 from typing import NamedTuple
 from typing import Tuple
 from typing import Union
+import numpy as np
 
 import torch
 
@@ -344,6 +345,8 @@ class BeamSearch(torch.nn.Module):
                         token_scores_seperate=hyp.token_scores_seperate + [my_token_scores_seperate],
                     )
                 )
+                # if np.isnan(best_hyps[-1].states["ctc"][1].sum()):
+                #     logging.error("here")
 
             # sort and prune 2 x beam -> beam
             best_hyps = sorted(best_hyps, key=lambda x: x.score, reverse=True)[
