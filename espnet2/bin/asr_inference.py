@@ -18,6 +18,7 @@ from typing import List
 from espnet.nets.batch_beam_search import BatchBeamSearch
 from espnet.nets.batch_beam_search_online_sim import BatchBeamSearchOnlineSim
 from espnet.nets.beam_search import BeamSearch
+from espnet.nets.beam_search_stochastic import StochasticBeamSearch
 from espnet.nets.beam_search import Hypothesis
 from espnet.nets.pytorch_backend.transformer.subsampling import TooShortUttError
 from espnet.nets.scorer_interface import BatchScorerInterface
@@ -78,6 +79,7 @@ class Speech2Text:
         nbest: int = 1,
         streaming: bool = False,
         temperature: float = 1.0,
+        beam_search_mode: str = "topk",
     ):
         assert check_argument_types()
 
@@ -157,8 +159,20 @@ class Speech2Text:
                 token_list=token_list,
                 pre_beam_score_key=None if ctc_weight == 1.0 else "full",
             )
-            beam_search.temperature = temperature
-            logging.info(f"beam_search.temperature = {beam_search.temperature}")
+            # beam_search = StochasticBeamSearch(
+            #     beam_size=beam_size,
+            #     weights=weights,
+            #     scorers=scorers,
+            #     sos=asr_model.sos,
+            #     eos=asr_model.eos,
+            #     vocab_size=len(token_list),
+            #     token_list=token_list,
+            #     pre_beam_score_key=None if ctc_weight == 1.0 else "full",
+            #     temperature=temperature,
+            #     beam_search_mode=beam_search_mode,   
+            # )
+            # logging.info(f"beam_search.temperature = {beam_search.temperature}")
+            # logging.info(f"beam_search_mode = {beam_search_mode}")
 
             # TODO(karita): make all scorers batchfied
             if batch_size == 1:
@@ -167,7 +181,7 @@ class Speech2Text:
                     for k, v in beam_search.full_scorers.items()
                     if not isinstance(v, BatchScorerInterface)
                 ]
-                # non_batch = [None]  # Ruizhe: disable batch_beam_search
+                non_batch = [None]  # Ruizhe: disable batch_beam_search
                 if len(non_batch) == 0:
                     if streaming:
                         beam_search.__class__ = BatchBeamSearchOnlineSim
