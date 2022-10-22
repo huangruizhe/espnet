@@ -1,5 +1,6 @@
 import torch
 import torch.nn.functional as F
+import logging
 
 
 def gumbel_like(*args, **kwargs):
@@ -36,7 +37,9 @@ def gumbel_with_maximum(phi, T, dim=-1):
     CHECK_VALIDITY = True
     if CHECK_VALIDITY:
         g_inv = _shift_gumbel_maximum(g, Z, dim)
-        assert (((g_phi - g_inv) < 1e-3) | (g_phi == g_inv)).all()
+        # assert (((g_phi - g_inv) < 1e-3) | (g_phi == g_inv)).all()
+        if (((g_phi - g_inv) < 1e-3) | (g_phi == g_inv)).all() is not True:
+            logging.warning("ASSERTION Failed: assert (((g_phi - g_inv) < 1e-3) | (g_phi == g_inv)).all()")
     return g, argmax
 
 

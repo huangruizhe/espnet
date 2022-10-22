@@ -149,30 +149,32 @@ class Speech2Text:
                 ngram=ngram_weight,
                 length_bonus=penalty,
             )
-            # beam_search = BeamSearch(
-            #     beam_size=beam_size,
-            #     weights=weights,
-            #     scorers=scorers,
-            #     sos=asr_model.sos,
-            #     eos=asr_model.eos,
-            #     vocab_size=len(token_list),
-            #     token_list=token_list,
-            #     pre_beam_score_key=None if ctc_weight == 1.0 else "full",
-            # )
-            beam_search = StochasticBeamSearch(
-                beam_size=beam_size,
-                weights=weights,
-                scorers=scorers,
-                sos=asr_model.sos,
-                eos=asr_model.eos,
-                vocab_size=len(token_list),
-                token_list=token_list,
-                pre_beam_score_key=None if ctc_weight == 1.0 else "full",
-                temperature=temperature,
-                beam_search_mode=beam_search_mode,   
-            )
-            logging.info(f"beam_search.temperature = {beam_search.temperature}")
             logging.info(f"beam_search_mode = {beam_search_mode}")
+            if beam_search_mode == "standard":
+                beam_search = BeamSearch(
+                    beam_size=beam_size,
+                    weights=weights,
+                    scorers=scorers,
+                    sos=asr_model.sos,
+                    eos=asr_model.eos,
+                    vocab_size=len(token_list),
+                    token_list=token_list,
+                    pre_beam_score_key=None if ctc_weight == 1.0 else "full",
+                )
+            else:
+                beam_search = StochasticBeamSearch(
+                    beam_size=beam_size,
+                    weights=weights,
+                    scorers=scorers,
+                    sos=asr_model.sos,
+                    eos=asr_model.eos,
+                    vocab_size=len(token_list),
+                    token_list=token_list,
+                    pre_beam_score_key=None if ctc_weight == 1.0 else "full",
+                    temperature=temperature,
+                    beam_search_mode=beam_search_mode,   
+                )
+                logging.info(f"beam_search.temperature = {beam_search.temperature}")
 
             # TODO(karita): make all scorers batchfied
             if batch_size == 1:
@@ -591,7 +593,7 @@ def get_parser():
         "--beam_search_mode", 
         type=str, 
         default="topk",
-        choices=("topk", "sampling", "stochastic"),
+        choices=("topk", "sampling", "stochastic", "standard"),
         help="Beam search mode"
     )
     group.add_argument("--beam_size", type=int, default=20, help="Beam size")

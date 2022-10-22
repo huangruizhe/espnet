@@ -364,10 +364,9 @@ class StochasticBeamSearch(BeamSearch):
         # add eos in the final loop to avoid that there are no ended hyps
         if i == maxlen - 1:
             logging.info("adding <eos> in the last position in the loop")
-            running_hyps = [
-                h._replace(yseq=self.append_token(h.yseq, self.eos))
-                for h in running_hyps
-            ]
+            for hyp in running_hyps:
+                if hyp.yseq[-1] != self.eos:
+                    hyp._replace(yseq=self.append_token(hyp.yseq, self.eos))
         
         for hyp in running_hyps:
             if hyp.yseq[-1] == self.eos:
