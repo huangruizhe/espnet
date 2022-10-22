@@ -8,6 +8,7 @@ from typing import List
 from typing import NamedTuple
 from typing import Tuple
 from typing import Union
+from xmlrpc.client import Boolean
 import numpy as np
 
 import torch
@@ -36,7 +37,6 @@ class Hypothesis(NamedTuple):
             score=float(self.score),
             scores={k: float(v) for k, v in self.scores.items()},
         )._asdict()
-
 
 class BeamSearch(torch.nn.Module):
     """Beam search implementation."""

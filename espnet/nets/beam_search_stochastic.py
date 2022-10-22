@@ -114,6 +114,10 @@ class StochasticBeamSearch(BeamSearch):
         lprobs = torch.zeros((len(running_hyps), self.n_vocab))  # device=x.device
         lprobs_t = torch.zeros((len(running_hyps), self.n_vocab))
 
+        uniform_tmp = torch.log(torch.full((self.n_vocab,), 1/self.n_vocab))
+        biased_tmp = torch.full((self.n_vocab,), -float('inf'))
+        biased_tmp[self.eos] = 0
+
         # At any step, the size of running_hyps should be self.beam_size
         # if step == 0 and len(running_hyps) == 1:
         #     lprobs_t[1:, :] = -float('inf')
@@ -124,6 +128,13 @@ class StochasticBeamSearch(BeamSearch):
         for i_hyp, hyp in enumerate(running_hyps):
             # Let's compute the score defined by the sequence model.
             # Basically, the weighted_scores can equal to any normalized distribution
+
+            hyp_G[i_hyp] = hyp.G
+            if step > 0 and hyp.yseq[-1] == self.eos:
+                lprobs_t[i_hyp] = hyp.score_t + biased_tmp
+                things_to_save.append(None)
+                continue
+
             weighted_scores = torch.zeros(self.n_vocab, dtype=x.dtype, device=x.device)
 
             scores, states = self.score_full(hyp, x)
@@ -140,7 +151,7 @@ class StochasticBeamSearch(BeamSearch):
                 part_ids = torch.topk(pre_beam_scores, self.pre_beam_size)[1]
             part_scores, part_states = self.score_partial(hyp, part_ids, x)
             for k in self.part_scorers:
-                val = part_scores[k].min().item() - 2
+                val = part_scores[k].min().item() - 2.0  # This 2.0 is a tunable number, which provides an estimates for un-evaluated ctc scores
                 part_scores_full = torch.full((self.n_vocab,), val, device=part_scores[k].device)
                 part_scores_full[part_ids] = part_scores[k]
                 weighted_scores += self.weights[k] * part_scores_full
@@ -156,8 +167,7 @@ class StochasticBeamSearch(BeamSearch):
                     "weighted_scores": weighted_scores
                 }
             )
-            hyp_G[i_hyp] = hyp.G
-                
+
         # let's do the top-k sampling now
         if self.stochastic:
             if step == 0:    
@@ -174,7 +184,7 @@ class StochasticBeamSearch(BeamSearch):
                     # Take the best 2 x beam_size predictions. We'll choose the first
                     # beam_size of these which don't predict eos to continue with.
                     self.beam_size,  #  * 2 # TODO
-                    cand_scores.view(len(running_hyps), -1).size(1) - 1,  # -1 so we never select pad
+                    cand_scores.view(len(running_hyps), -1).size(1),
                 ),
             )
         elif self.sampling:
@@ -194,8 +204,11 @@ class StochasticBeamSearch(BeamSearch):
             # but this time, we actually know which id to choose.
             hyp = running_hyps[i_hyp]
 
-            scores, states = things_to_save[i_hyp]["scores"], things_to_save[i_hyp]["states"]
+            if step > 0 and hyp.yseq[-1] == self.eos:
+                best_hyps.append(hyp)
+                continue
 
+            scores, states = things_to_save[i_hyp]["scores"], things_to_save[i_hyp]["states"]
             weighted_scores = things_to_save[i_hyp]["weighted_scores"]
             
             part_ids = torch.tensor(part_ids)
@@ -211,18 +224,19 @@ class StochasticBeamSearch(BeamSearch):
                     new_word_score_k = v - hyp.scores[k]
                     my_token_scores_seperate[k] = new_word_score_k
 
-                # will be (2 x beam at most)
+                new_hyp= Hypothesis(
+                    score=weighted_scores[j],
+                    yseq=self.append_token(hyp.yseq, j),
+                    scores=new_scores,
+                    states=self.merge_states(states, part_states, part_j),
+                    token_scores=hyp.token_scores + [weighted_scores[j] - hyp.score],
+                    token_scores_seperate=hyp.token_scores_seperate + [my_token_scores_seperate],
+                    G=cand_scores[i_hyp][j],
+                    score_t=lprobs_t[i_hyp][j],
+                )
+
                 best_hyps.append(
-                    Hypothesis(
-                        score=weighted_scores[j],
-                        yseq=self.append_token(hyp.yseq, j),
-                        scores=new_scores,
-                        states=self.merge_states(states, part_states, part_j),
-                        token_scores=hyp.token_scores + [weighted_scores[j] - hyp.score],
-                        token_scores_seperate=hyp.token_scores_seperate + [my_token_scores_seperate],
-                        G=cand_scores[i_hyp][j],
-                        score_t=lprobs_t[i_hyp][j],
-                    )
+                    new_hyp
                 )
                 # if np.isnan(best_hyps[-1].states["ctc"][1].sum()):
                 #     logging.error("here")
@@ -235,6 +249,191 @@ class StochasticBeamSearch(BeamSearch):
         return best_hyps
 
     def forward(
+        self, x: torch.Tensor, maxlenratio: float = 0.0, minlenratio: float = 0.0
+    ) -> List[Hypothesis]:
+        """Perform stochastic beam search.
+
+        Args:
+            x (torch.Tensor): Encoded speech feature (T, D)
+            maxlenratio (float): Input length ratio to obtain max output length.
+                If maxlenratio=0.0 (default), it uses a end-detect function
+                to automatically find maximum hypothesis lengths
+                If maxlenratio<0.0, its absolute value is interpreted
+                as a constant max output length.
+            minlenratio (float): Input length ratio to obtain min output length.
+
+        Returns:
+            list[Hypothesis]: N-best decoding results
+
+        """
+        # set length bounds
+        if maxlenratio == 0:
+            maxlen = x.shape[0]
+        elif maxlenratio < 0:
+            maxlen = -1 * int(maxlenratio)
+        else:
+            maxlen = max(1, int(maxlenratio * x.size(0)))
+        minlen = int(minlenratio * x.size(0))
+        logging.info("decoder input length: " + str(x.shape[0]))
+        logging.info("max output length: " + str(maxlen))
+        logging.info("min output length: " + str(minlen))
+
+        # main loop of prefix search
+        running_hyps = self.init_hyp(x)
+        for i in range(maxlen):
+            logging.debug("position " + str(i))
+            best = self.search(running_hyps, x, i)
+
+            # post process of one iteration
+            # running_hyps = self.post_process(i, maxlen, maxlenratio, best, ended_hyps)
+            ended_hyps = []
+            running_hyps = self.post_process_for_sbs(i, maxlen, maxlenratio, best, ended_hyps)
+
+            # end detection
+            logging.debug(f"the number of ended hypotheses: {len(ended_hyps)}")
+            if maxlenratio == 0.0 and end_detect([h.asdict() for h in ended_hyps], i):
+                logging.info(f"end detected at {i}")
+                break
+
+            if len(running_hyps) == 0:
+                logging.info("no hypothesis. Finish decoding.")
+                break
+            else:
+                logging.debug(f"remained hypotheses: {len(running_hyps)}")
+
+        ended_hyps = []
+        _ = self.post_process_for_sbs(i, maxlen, maxlenratio, running_hyps, ended_hyps)
+
+        nbest_hyps = sorted(ended_hyps, key=lambda x: x.score, reverse=True)
+        # check the number of hypotheses reaching to eos
+        if len(nbest_hyps) == 0:
+            logging.warning(
+                "there is no N-best results, perform recognition "
+                "again with smaller minlenratio."
+            )
+            return (
+                []
+                if minlenratio < 0.1
+                else self.forward(x, maxlenratio, max(0.0, minlenratio - 0.1))
+            )
+
+        # report the best result
+        best = nbest_hyps[0]
+        for k, v in best.scores.items():
+            logging.info(
+                f"{v:6.2f} * {self.weights[k]:3} = {v * self.weights[k]:6.2f} for {k}"
+            )
+        logging.info(f"total log probability: {best.score:.2f}")
+        logging.info(f"normalized log probability: {best.score / len(best.yseq):.2f}")
+        logging.info(f"total number of ended hypotheses: {len(nbest_hyps)}")
+        if self.token_list is not None:
+            logging.info(
+                "best hypo: "
+                + "".join([self.token_list[x] for x in best.yseq[1:-1]])
+                + "\n"
+            )
+        return nbest_hyps
+
+    def post_process_for_sbs(
+        self,
+        i: int,
+        maxlen: int,
+        maxlenratio: float,
+        running_hyps: List[Hypothesis],
+        ended_hyps: List[Hypothesis],
+    ) -> List[Hypothesis]:
+        """Perform post-processing of beam search iterations.
+
+        Args:
+            i (int): The length of hypothesis tokens.
+            maxlen (int): The maximum length of tokens in beam search.
+            maxlenratio (int): The maximum length ratio in beam search.
+            running_hyps (List[Hypothesis]): The running hypotheses in beam search.
+            ended_hyps (List[Hypothesis]): The ended hypotheses in beam search.
+
+        Returns:
+            List[Hypothesis]: The new running hypotheses.
+
+        """
+        logging.debug(f"the number of running hypotheses: {len(running_hyps)}")
+        if self.token_list is not None:
+            logging.debug(
+                "best hypo: "
+                + "".join([self.token_list[x] for x in running_hyps[0].yseq[1:]])
+            )
+        # add eos in the final loop to avoid that there are no ended hyps
+        if i == maxlen - 1:
+            logging.info("adding <eos> in the last position in the loop")
+            running_hyps = [
+                h._replace(yseq=self.append_token(h.yseq, self.eos))
+                for h in running_hyps
+            ]
+        
+        for hyp in running_hyps:
+            if hyp.yseq[-1] == self.eos:
+                # e.g., Word LM needs to add final <eos> score
+                for k, d in chain(self.full_scorers.items(), self.part_scorers.items()):
+                    s = d.final_score(hyp.states[k])
+                    hyp.scores[k] += s
+                    hyp = hyp._replace(score=hyp.score + self.weights[k] * s)
+                ended_hyps.append(hyp)
+        return running_hyps
+
+    def post_process_for_sbs2(
+        self,
+        i: int,
+        maxlen: int,
+        maxlenratio: float,
+        running_hyps: List[Hypothesis],
+        ended_hyps: List[Hypothesis],
+    ) -> List[Hypothesis]:
+        """Perform post-processing of beam search iterations.
+
+        Args:
+            i (int): The length of hypothesis tokens.
+            maxlen (int): The maximum length of tokens in beam search.
+            maxlenratio (int): The maximum length ratio in beam search.
+            running_hyps (List[Hypothesis]): The running hypotheses in beam search.
+            ended_hyps (List[Hypothesis]): The ended hypotheses in beam search.
+
+        Returns:
+            List[Hypothesis]: The new running hypotheses.
+
+        """
+        logging.debug(f"the number of running hypotheses: {len(running_hyps)}")
+        if self.token_list is not None:
+            logging.debug(
+                "best hypo: "
+                + "".join([self.token_list[x] for x in running_hyps[0].yseq[1:]])
+            )
+        # add eos in the final loop to avoid that there are no ended hyps
+        if i == maxlen - 1:
+            logging.info("adding <eos> in the last position in the loop")
+            running_hyps = [
+                h._replace(yseq=self.append_token(h.yseq, self.eos))
+                for h in running_hyps
+            ]
+        
+        for hyp in running_hyps:
+            end_pos = hyp.yseq.tolist().index(self.eos)
+            hyp._replace(yseq=hyp.yseq[: end_pos + 1])
+
+        # add ended hypotheses to a final list, and removed them from current hypotheses
+        # (this will be a problem, number of hyps < beam)
+        remained_hyps = []
+        for hyp in running_hyps:
+            if hyp.yseq[-1] == self.eos:
+                # e.g., Word LM needs to add final <eos> score
+                for k, d in chain(self.full_scorers.items(), self.part_scorers.items()):
+                    s = d.final_score(hyp.states[k])
+                    hyp.scores[k] += s
+                    hyp = hyp._replace(score=hyp.score + self.weights[k] * s)
+                ended_hyps.append(hyp)
+            else:
+                remained_hyps.append(hyp)
+        return remained_hyps
+
+    def forward_original(
         self, x: torch.Tensor, maxlenratio: float = 0.0, minlenratio: float = 0.0
     ) -> List[Hypothesis]:
         """Perform stochastic beam search.
