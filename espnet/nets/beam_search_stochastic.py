@@ -119,6 +119,8 @@ class StochasticBeamSearch(BeamSearch):
         #     lprobs_t[1:, :] = -float('inf')
         things_to_save = []
 
+        part_ids = torch.arange(self.n_vocab, device=x.device)  # no pre-beam
+        hyp_G = lprobs_t.new(size=(len(running_hyps),))
         for i_hyp, hyp in enumerate(running_hyps):
             # Let's compute the score defined by the sequence model.
             # Basically, the weighted_scores can equal to any normalized distribution
@@ -144,24 +146,24 @@ class StochasticBeamSearch(BeamSearch):
                 weighted_scores += self.weights[k] * part_scores_full
 
             # This is cumulative prob for each candidate
-            # weighted_scores_t = F.log_softmax(weighted_scores / self.temperature, dim=-1)  + hyp.score_t
-            weighted_scores_t = weighted_scores + hyp.score
-            lprobs_t[i_hyp] = weighted_scores_t
+            weighted_scores = hyp.score + weighted_scores
+            lprobs_t[i_hyp] = hyp.score_t + F.log_softmax(weighted_scores / self.temperature, dim=-1)
 
             things_to_save.append(
                 {
                     "scores": scores,
                     "states": states,
-                    "weighted_scores_t": weighted_scores_t
+                    "weighted_scores": weighted_scores
                 }
             )
+            hyp_G[i_hyp] = hyp.G
                 
         # let's do the top-k sampling now
         if self.stochastic:
             if step == 0:    
                 cand_scores = gumbel_like(lprobs_t) + lprobs_t
             else:
-                cand_scores, _ = gumbel_with_maximum(lprobs_t, hyp.G, -1)
+                cand_scores, _ = gumbel_with_maximum(lprobs_t, hyp_G, -1)
         else:
             cand_scores = lprobs_t
         
@@ -194,7 +196,7 @@ class StochasticBeamSearch(BeamSearch):
 
             scores, states = things_to_save[i_hyp]["scores"], things_to_save[i_hyp]["states"]
 
-            weighted_scores = things_to_save[i_hyp]["weighted_scores_t"]
+            weighted_scores = things_to_save[i_hyp]["weighted_scores"]
             
             part_ids = torch.tensor(part_ids)
             part_scores, part_states = self.score_partial(hyp, part_ids, x)
@@ -218,6 +220,8 @@ class StochasticBeamSearch(BeamSearch):
                         states=self.merge_states(states, part_states, part_j),
                         token_scores=hyp.token_scores + [weighted_scores[j] - hyp.score],
                         token_scores_seperate=hyp.token_scores_seperate + [my_token_scores_seperate],
+                        G=cand_scores[i_hyp][j],
+                        score_t=lprobs_t[i_hyp][j],
                     )
                 )
                 # if np.isnan(best_hyps[-1].states["ctc"][1].sum()):

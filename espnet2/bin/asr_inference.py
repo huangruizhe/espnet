@@ -388,6 +388,7 @@ def inference(
     transducer_conf: Optional[dict],
     streaming: bool,
     temperature: float,
+    beam_search_mode: str,
 ):
     assert check_argument_types()
     if batch_size > 1:
@@ -432,6 +433,7 @@ def inference(
         nbest=nbest,
         streaming=streaming,
         temperature=temperature,
+        beam_search_mode=beam_search_mode,
     )
     speech2text = Speech2Text.from_pretrained(
         model_tag=model_tag,
@@ -460,6 +462,7 @@ def inference(
             _bs = len(next(iter(batch.values())))
             assert len(keys) == _bs, f"{len(keys)} != {_bs}"
             batch = {k: v[0] for k, v in batch.items() if not k.endswith("_lengths")}
+            logging.info(f"keys: {keys}")
 
             # N-best list of (text, token, token_int, hyp_object)
             try:
@@ -583,7 +586,14 @@ def get_parser():
         help="The batch size for inference",
     )
     group.add_argument("--nbest", type=int, default=1, help="Output N-best hypotheses")
-    group.add_argument("--temperature", type=float, default=1.0, help="Reciprocal of temperature for stochastic beam search")
+    group.add_argument("--temperature", type=float, default=1.0, help="Temperature for stochastic beam search")
+    group.add_argument(
+        "--beam_search_mode", 
+        type=str, 
+        default="topk",
+        choices=("topk", "sampling", "stochastic"),
+        help="Beam search mode"
+    )
     group.add_argument("--beam_size", type=int, default=20, help="Beam size")
     group.add_argument("--penalty", type=float, default=0.0, help="Insertion penalty")
     group.add_argument(
