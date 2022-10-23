@@ -36,10 +36,11 @@ def gumbel_with_maximum(phi, T, dim=-1):
     g = _shift_gumbel_maximum(g_phi, T, dim, Z=Z)
     CHECK_VALIDITY = True
     if CHECK_VALIDITY:
-        g_inv = _shift_gumbel_maximum(g, Z, dim)
+        g_inv = _shift_gumbel_maximum(g, Z, dim, Z=T)
         # assert (((g_phi - g_inv) < 1e-3) | (g_phi == g_inv)).all()
-        if (((g_phi - g_inv) < 1e-3) | (g_phi == g_inv)).all() is not True:
-            logging.warning("ASSERTION Failed: assert (((g_phi - g_inv) < 1e-3) | (g_phi == g_inv)).all()")
+        # if (((g_phi - g_inv) < 1e-3) | (g_phi == g_inv)).all() is not True:
+        if not torch.allclose(g_phi, g_inv, atol=1e-3):
+            logging.warning("ASSERTION Failed: g_phi and g_inv is not close")
     return g, argmax
 
 

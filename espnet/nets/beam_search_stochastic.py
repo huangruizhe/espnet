@@ -115,7 +115,7 @@ class StochasticBeamSearch(BeamSearch):
         lprobs_t = torch.zeros((len(running_hyps), self.n_vocab))
 
         uniform_tmp = torch.log(torch.full((self.n_vocab,), 1/self.n_vocab))
-        biased_tmp = torch.full((self.n_vocab,), -float('inf'))
+        biased_tmp = torch.full((self.n_vocab,), -1e6)  # -float('inf')
         biased_tmp[self.eos] = 0
 
         # At any step, the size of running_hyps should be self.beam_size
@@ -151,7 +151,7 @@ class StochasticBeamSearch(BeamSearch):
                 part_ids = torch.topk(pre_beam_scores, self.pre_beam_size)[1]
             part_scores, part_states = self.score_partial(hyp, part_ids, x)
             for k in self.part_scorers:
-                val = part_scores[k].min().item() - 2.0  # This 2.0 is a tunable number, which provides an estimates for un-evaluated ctc scores
+                val = part_scores[k].min().item() - 2.0  # TODO: This 2.0 is a tunable number, which provides an estimates for un-evaluated ctc scores
                 part_scores_full = torch.full((self.n_vocab,), val, device=part_scores[k].device)
                 part_scores_full[part_ids] = part_scores[k]
                 weighted_scores += self.weights[k] * part_scores_full
@@ -301,8 +301,8 @@ class StochasticBeamSearch(BeamSearch):
             else:
                 logging.debug(f"remained hypotheses: {len(running_hyps)}")
 
-        ended_hyps = []
-        _ = self.post_process_for_sbs(i, maxlen, maxlenratio, running_hyps, ended_hyps)
+        # ended_hyps = []
+        # _ = self.post_process_for_sbs(i, maxlen, maxlenratio, running_hyps, ended_hyps)
 
         nbest_hyps = sorted(ended_hyps, key=lambda x: x.score, reverse=True)
         # check the number of hypotheses reaching to eos
@@ -375,6 +375,7 @@ class StochasticBeamSearch(BeamSearch):
                     s = d.final_score(hyp.states[k])
                     hyp.scores[k] += s
                     hyp = hyp._replace(score=hyp.score + self.weights[k] * s)
+                hyp = hyp._replace(is_done=True)
                 ended_hyps.append(hyp)
         return running_hyps
 
