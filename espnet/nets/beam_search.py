@@ -29,6 +29,7 @@ class Hypothesis(NamedTuple):
     states: Dict[str, Any] = dict()
     token_scores: List[Union[float, torch.Tensor]] = list()
     token_scores_seperate: List[Dict[str, Union[float, torch.Tensor]]] = list()
+    last_word_start: int = 0
 
     def asdict(self) -> dict:
         """Convert data to JSON-friendly dict."""
@@ -204,7 +205,9 @@ class BeamSearch(torch.nn.Module):
         return scores, states
 
     def beam(
-        self, weighted_scores: torch.Tensor, ids: torch.Tensor
+        self, weighted_scores: torch.Tensor, 
+        ids: torch.Tensor, 
+        beam_size: int = None,
     ) -> Tuple[torch.Tensor, torch.Tensor]:
         """Compute topk full token ids and partial token ids.
 
@@ -219,17 +222,26 @@ class BeamSearch(torch.nn.Module):
                 Their shapes are `(self.beam_size,)`
 
         """
+        if beam_size is None:
+            beam_size = self.beam_size
+        
+        if beam_size > ids.shape[0]:
+            beam_size = ids.shape[0]
+        
+        if ids.shape[0] == 0:
+            return [], []
+
         # no pre beam performed
         if weighted_scores.size(0) == ids.size(0):
-            top_ids = weighted_scores.topk(self.beam_size)[1]
+            top_ids = weighted_scores.topk(beam_size)[1]
             return top_ids, top_ids
 
         # mask pruned in pre-beam not to select in topk
         tmp = weighted_scores[ids]
         weighted_scores[:] = -float("inf")
         weighted_scores[ids] = tmp
-        top_ids = weighted_scores.topk(self.beam_size)[1]
-        local_ids = weighted_scores[ids].topk(self.beam_size)[1]
+        top_ids = weighted_scores.topk(beam_size)[1]
+        local_ids = weighted_scores[ids].topk(beam_size)[1]
         return top_ids, local_ids
 
     @staticmethod

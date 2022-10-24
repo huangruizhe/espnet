@@ -19,6 +19,7 @@ from espnet.nets.batch_beam_search import BatchBeamSearch
 from espnet.nets.batch_beam_search_online_sim import BatchBeamSearchOnlineSim
 from espnet.nets.beam_search import BeamSearch
 from espnet.nets.beam_search_stochastic import StochasticBeamSearch
+from espnet.nets.beam_search_constrained import ConstrainedBeamSearch
 from espnet.nets.beam_search import Hypothesis
 from espnet.nets.pytorch_backend.transformer.subsampling import TooShortUttError
 from espnet.nets.scorer_interface import BatchScorerInterface
@@ -80,6 +81,7 @@ class Speech2Text:
         streaming: bool = False,
         temperature: float = 1.0,
         beam_search_mode: str = "topk",
+        wordlist_file: str = None,
     ):
         assert check_argument_types()
 
@@ -161,6 +163,19 @@ class Speech2Text:
                     token_list=token_list,
                     pre_beam_score_key=None if ctc_weight == 1.0 else "full",
                 )
+            elif beam_search_mode == "constrained":
+                beam_search = ConstrainedBeamSearch(
+                    beam_size=beam_size,
+                    weights=weights,
+                    scorers=scorers,
+                    sos=asr_model.sos,
+                    eos=asr_model.eos,
+                    vocab_size=len(token_list),
+                    token_list=token_list,
+                    pre_beam_score_key=None if ctc_weight == 1.0 else "full",
+                    wordlist_file=wordlist_file,
+                )
+                logging.info(f"wordlist_file = {wordlist_file}")
             else:
                 beam_search = StochasticBeamSearch(
                     beam_size=beam_size,
@@ -391,6 +406,7 @@ def inference(
     streaming: bool,
     temperature: float,
     beam_search_mode: str,
+    wordlist_file: str,
 ):
     assert check_argument_types()
     if batch_size > 1:
@@ -436,6 +452,7 @@ def inference(
         streaming=streaming,
         temperature=temperature,
         beam_search_mode=beam_search_mode,
+        wordlist_file=wordlist_file
     )
     speech2text = Speech2Text.from_pretrained(
         model_tag=model_tag,
@@ -593,9 +610,10 @@ def get_parser():
         "--beam_search_mode", 
         type=str, 
         default="topk",
-        choices=("topk", "sampling", "stochastic", "standard", "interpolation"),
+        choices=("topk", "sampling", "stochastic", "standard", "interpolation", "constrained"),
         help="Beam search mode"
     )
+    group.add_argument("--wordlist_file", type=str, default=None, help="The word list for constrained beam search")
     group.add_argument("--beam_size", type=int, default=20, help="Beam size")
     group.add_argument("--penalty", type=float, default=0.0, help="Insertion penalty")
     group.add_argument(
