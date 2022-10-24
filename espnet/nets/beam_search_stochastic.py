@@ -158,6 +158,7 @@ class StochasticBeamSearch(BeamSearch):
 
             # This is cumulative prob for each candidate
             lprobs_t[i_hyp] = hyp.score_t + F.log_softmax(weighted_scores / self.temperature, dim=-1)
+            # lprobs_t[i_hyp] = hyp.score + weighted_scores   # no normalization for the sampling distribution
             weighted_scores = hyp.score + weighted_scores
 
             things_to_save.append(
@@ -241,7 +242,6 @@ class StochasticBeamSearch(BeamSearch):
                 # if np.isnan(best_hyps[-1].states["ctc"][1].sum()):
                 #     logging.error("here")
 
-        # sort and prune 2 x beam -> beam
         best_hyps = sorted(best_hyps, key=lambda x: x.score, reverse=True)[
             : min(len(best_hyps), self.beam_size)
         ]
@@ -292,7 +292,8 @@ class StochasticBeamSearch(BeamSearch):
             # ended_hyps = []
             # running_hyps = self.post_process_for_sbs(i, maxlen, maxlenratio, best, ended_hyps)
 
-            # Option2: Keep beam to be beam_size, but we may have more leaves
+            # Option2: Keep beam to be beam_size, but we may have more leaves (ended hypothesis)
+            # Just to ensure every step we only explore no more than (beam_size * vocab_size) options
             running_hyps = self.post_process(i, maxlen, maxlenratio, best, ended_hyps)            
 
             # end detection
