@@ -593,7 +593,7 @@ def get_parser():
         "--beam_search_mode", 
         type=str, 
         default="topk",
-        choices=("topk", "sampling", "stochastic", "standard"),
+        choices=("topk", "sampling", "stochastic", "standard", "interpolation"),
         help="Beam search mode"
     )
     group.add_argument("--beam_size", type=int, default=20, help="Beam size")

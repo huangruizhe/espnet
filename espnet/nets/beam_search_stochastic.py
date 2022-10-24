@@ -78,12 +78,15 @@ class StochasticBeamSearch(BeamSearch):
         self.stochastic = False
         self.topk = False
         self.sampling = False
+        self.interpolation = False
         if beam_search_mode == "stochastic":
             self.stochastic = True
         elif beam_search_mode == "sampling":
             self.sampling = True
         elif beam_search_mode == "topk":
             self.topk = True
+        elif beam_search_mode == "interpolation":
+            self.interpolation = True
         else:
             logging.error(f"Invalid beam_search_mode={beam_search_mode}")
             raise NotImplementedError
@@ -170,15 +173,17 @@ class StochasticBeamSearch(BeamSearch):
             )
 
         # let's do the top-k sampling now
-        if self.stochastic:
+        if self.stochastic or self.interpolation:
             if step == 0:    
                 cand_scores = gumbel_like(lprobs_t) + lprobs_t
             else:
                 cand_scores, _ = gumbel_with_maximum(lprobs_t, hyp_G, -1)
+        elif self.sampling:
+            cand_scores = gumbel_like(lprobs_t) + lprobs_t
         else:
             cand_scores = lprobs_t
         
-        if self.stochastic or self.topk:
+        if self.stochastic or self.topk or self.sampling:
             topk_gs, topk_indices = torch.topk(
                 cand_scores.view(-1),
                 k=min(
@@ -188,8 +193,56 @@ class StochasticBeamSearch(BeamSearch):
                     cand_scores.view(len(running_hyps), -1).size(1),
                 ),
             )
-        elif self.sampling:
-            raise NotImplementedError
+        elif self.interpolation:
+            kk = min(
+                self.beam_size,
+                cand_scores.view(len(running_hyps), -1).size(1),
+            )
+            # from stochastic
+            topk_gs1, topk_indices1 = torch.topk(
+                cand_scores.view(-1),
+                k=kk,
+            )
+            # from topk
+            topk_gs2, topk_indices2 = torch.topk(
+                lprobs_t.view(-1),  # TODO: lprobs_t might be replace by lprobs, which is un-tempratured and un-normalized
+                k=kk,
+            )
+            # merge the two topk lists, such that the final result contains equal number of hyps from each of the two parts
+            topk_gs = torch.zeros_like(topk_gs1)
+            topk_gs[:] = float("inf")
+            topk_indices = torch.zeros_like(topk_indices1)
+            topk_indices[:] = -1
+            n_taken = 0
+            n_taken1 = 0
+            n_taken2 = 0
+            index1 = 0
+            index2 = 0
+            while n_taken < kk:
+                if n_taken1 < n_taken2:  # take next one from stochastic
+                    while index1 < topk_indices1.shape[0]:
+                        if topk_indices1[index1] in topk_indices:
+                            index1 += 1
+                            continue
+                        else:
+                            topk_indices[n_taken] = topk_indices1[index1]
+                            topk_gs[n_taken] = topk_gs1[index1]
+                            n_taken += 1
+                            n_taken1 += 1
+                            index1 += 1
+                            break
+                else:  # take next one from topk
+                    while index2 < topk_indices2.shape[0]:
+                        if topk_indices2[index2] in topk_indices:
+                            index2 += 1
+                            continue
+                        else:
+                            topk_indices[n_taken] = topk_indices2[index2]
+                            topk_gs[n_taken] = topk_gs2[index2]
+                            n_taken += 1
+                            n_taken2 += 1
+                            index2 += 1
+                            break
         else:
             raise NotImplementedError
 

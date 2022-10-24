@@ -23,8 +23,8 @@ class Hypothesis(NamedTuple):
 
     yseq: torch.Tensor
     score: Union[float, torch.Tensor] = 0
-    score_t: Union[float, torch.Tensor] = 0
-    G: Union[float, torch.Tensor] = 0   # gumbel variable for the last symbol
+    score_t: Union[float, torch.Tensor] = 0   # hypothesis prob mass (temperatured and normalized) for sampling
+    G: Union[float, torch.Tensor] = 0   # gumbel variable since the last symbol
     scores: Dict[str, Union[float, torch.Tensor]] = dict()
     states: Dict[str, Any] = dict()
     token_scores: List[Union[float, torch.Tensor]] = list()
