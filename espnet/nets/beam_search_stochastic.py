@@ -157,8 +157,8 @@ class StochasticBeamSearch(BeamSearch):
                 weighted_scores += self.weights[k] * part_scores_full
 
             # This is cumulative prob for each candidate
-            weighted_scores = hyp.score + weighted_scores
             lprobs_t[i_hyp] = hyp.score_t + F.log_softmax(weighted_scores / self.temperature, dim=-1)
+            weighted_scores = hyp.score + weighted_scores
 
             things_to_save.append(
                 {
@@ -280,14 +280,20 @@ class StochasticBeamSearch(BeamSearch):
 
         # main loop of prefix search
         running_hyps = self.init_hyp(x)
+        ended_hyps = []
         for i in range(maxlen):
             logging.debug("position " + str(i))
             best = self.search(running_hyps, x, i)
 
             # post process of one iteration
             # running_hyps = self.post_process(i, maxlen, maxlenratio, best, ended_hyps)
-            ended_hyps = []
-            running_hyps = self.post_process_for_sbs(i, maxlen, maxlenratio, best, ended_hyps)
+
+            # Option1: Strictly sample beam_size from leaves:
+            # ended_hyps = []
+            # running_hyps = self.post_process_for_sbs(i, maxlen, maxlenratio, best, ended_hyps)
+
+            # Option2: Keep beam to be beam_size, but we may have more leaves
+            running_hyps = self.post_process(i, maxlen, maxlenratio, best, ended_hyps)            
 
             # end detection
             logging.debug(f"the number of ended hypotheses: {len(ended_hyps)}")
@@ -364,9 +370,13 @@ class StochasticBeamSearch(BeamSearch):
         # add eos in the final loop to avoid that there are no ended hyps
         if i == maxlen - 1:
             logging.info("adding <eos> in the last position in the loop")
+            running_hyps_ = []
             for hyp in running_hyps:
                 if hyp.yseq[-1] != self.eos:
-                    hyp._replace(yseq=self.append_token(hyp.yseq, self.eos))
+                    running_hyps_.append(hyp._replace(yseq=self.append_token(hyp.yseq, self.eos)))
+                else:
+                    running_hyps_.append(hyp)
+            running_hyps = running_hyps_
         
         for hyp in running_hyps:
             if hyp.yseq[-1] == self.eos:
