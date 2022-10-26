@@ -19,7 +19,8 @@ from espnet.nets.batch_beam_search import BatchBeamSearch
 from espnet.nets.batch_beam_search_online_sim import BatchBeamSearchOnlineSim
 from espnet.nets.beam_search import BeamSearch
 from espnet.nets.beam_search_stochastic import StochasticBeamSearch
-from espnet.nets.beam_search_constrained import ConstrainedBeamSearch
+# from espnet.nets.beam_search_constrained import ConstrainedBeamSearch
+from espnet.nets.beam_search_constrained2 import ConstrainedBeamSearch
 from espnet.nets.beam_search import Hypothesis
 from espnet.nets.pytorch_backend.transformer.subsampling import TooShortUttError
 from espnet.nets.scorer_interface import BatchScorerInterface
@@ -162,6 +163,7 @@ class Speech2Text:
                     vocab_size=len(token_list),
                     token_list=token_list,
                     pre_beam_score_key=None if ctc_weight == 1.0 else "full",
+                    temperature=temperature,
                 )
             elif beam_search_mode == "constrained":
                 beam_search = ConstrainedBeamSearch(
@@ -329,7 +331,7 @@ class Speech2Text:
                 text = None
             results.append((text, token, token_int, hyp))
 
-        assert check_return_type(results)
+        # assert check_return_type(results)
         return results
 
     @staticmethod

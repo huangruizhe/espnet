@@ -12,6 +12,7 @@ from xmlrpc.client import Boolean
 import numpy as np
 
 import torch
+import torch.nn.functional as F
 
 from espnet.nets.e2e_asr_common import end_detect
 from espnet.nets.scorer_interface import PartialScorerInterface
@@ -30,6 +31,8 @@ class Hypothesis(NamedTuple):
     token_scores: List[Union[float, torch.Tensor]] = list()
     token_scores_seperate: List[Dict[str, Union[float, torch.Tensor]]] = list()
     last_word_start: int = 0
+    word_score: Union[float, torch.Tensor] = 0
+    id: int = None
 
     def asdict(self) -> dict:
         """Convert data to JSON-friendly dict."""
@@ -53,6 +56,7 @@ class BeamSearch(torch.nn.Module):
         token_list: List[str] = None,
         pre_beam_ratio: float = 1.5,
         pre_beam_score_key: str = None,
+        temperature: float = 1.0,
     ):
         """Initialize beam search.
 
@@ -116,7 +120,7 @@ class BeamSearch(torch.nn.Module):
             and len(self.part_scorers) > 0
         )
 
-        self.temperature = 1.0  # for stochastic beam search
+        self.temperature = temperature  # for stochastic beam search
 
     def init_hyp(self, x: torch.Tensor) -> List[Hypothesis]:
         """Get an initial hypothesis data.
@@ -329,6 +333,9 @@ class BeamSearch(torch.nn.Module):
             part_scores, part_states = self.score_partial(hyp, part_ids, x)
             for k in self.part_scorers:
                 weighted_scores[part_ids] += self.weights[k] * part_scores[k]
+            # apply temperature and normalization
+            if self.temperature != 1.0:
+                weighted_scores = F.log_softmax(weighted_scores / self.temperature, dim=-1)
             # add previous hyp score
             weighted_scores += hyp.score   # p( h | x) * (p1(w|h,x), p2(w|h,x), p3(w|h,x))
 
