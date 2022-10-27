@@ -41,7 +41,7 @@ class Cache():
         self.entries = dict()   # word_prefix => cache entry
 
     def check(self, word_prefix):
-        entry = self.enties.setdefault(word_prefix, CacheEntry())
+        entry = self.entries.setdefault(word_prefix, CacheEntry())
         return entry.check()
     
     def forget(self):
@@ -49,11 +49,15 @@ class Cache():
         n_entries_before = len(self.entries)
         for word_prefix, entry in self.entries.items():
             entry.lifetime += 1
-            if entry.lifetime >= life_thres:
+            if entry.lifetime >= self.life_thres:
                 to_forget.append(word_prefix)
         for forget_prefix in to_forget:
             self.entries.pop(forget_prefix)
         logging.debug(f"There were {n_entries_before} entries, {len(to_forget)} are forgotten now, {len(self.entries)} are left.")
+        logging.debug(f"Cache items: {str(self)}")
+    
+    def __str__(self):
+        return str([(word_prefix, entry.count, entry.lifetime) for word_prefix, entry in sorted(self.entries.items())])
 
 
 class CachedBeamSearch(BeamSearch):
@@ -109,6 +113,8 @@ class CachedBeamSearch(BeamSearch):
     def select_topk(self, running_hyps, hyp_ids, j_ids):
         topk_hyp_ids = []
         topk_j_ids = []
+        pos = 0
+        reject_count = 0
         for i_hyp, j in zip(hyp_ids, j_ids):
             hyp = running_hyps[i_hyp]
 
@@ -125,6 +131,11 @@ class CachedBeamSearch(BeamSearch):
             
                 if len(topk_hyp_ids) >= self.beam_size:
                     break
+            else:
+                reject_count += 1
+            
+            pos += 1
+        logging.debug(f"{reject_count} hypos are rejected by cache, and pos/beam_size is {pos/self.beam_size}")
         return topk_hyp_ids, topk_j_ids
     
     def last_resort(self, topk_hyp_ids, topk_j_ids, running_hyps, hyp_ids, j_ids):
@@ -227,7 +238,7 @@ class CachedBeamSearch(BeamSearch):
                 if j_token.startswith("▁"):
                     last_word = j_token
                 else:
-                    last_word = hyp.last_word + j
+                    last_word = hyp.last_word + j_token
 
                 # will be (2 x beam at most)
                 best_hyps.append(

@@ -87,6 +87,8 @@ class Speech2Text:
         temperature: float = 1.0,
         beam_search_mode: str = "topk",
         wordlist_file: str = "",
+        life_thres: int = 3,
+        hits_thres: int = 3,
     ):
         assert check_argument_types()
 
@@ -405,7 +407,6 @@ def get_scorer_details(hyp_scores, hyp_token_scores_seperate):
     return output_str
 
 
-
 def inference(
     output_dir: str,
     maxlenratio: float,
@@ -440,8 +441,8 @@ def inference(
     temperature: float,
     beam_search_mode: str,
     wordlist_file: str,
-    life_thres, int,
-    hits_thres, int,
+    life_thres: int,
+    hits_thres: int,
 ):
     assert check_argument_types()
     if batch_size > 1:
@@ -487,7 +488,7 @@ def inference(
         streaming=streaming,
         temperature=temperature,
         beam_search_mode=beam_search_mode,
-        wordlist_file=wordlist_file
+        wordlist_file=wordlist_file,
         life_thres=life_thres,
         hits_thres=hits_thres,
     )
