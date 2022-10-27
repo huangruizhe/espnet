@@ -8,6 +8,7 @@ from typing import Optional
 from typing import Sequence
 from typing import Tuple
 from typing import Union
+from collections import defaultdict
 
 import numpy as np
 import torch
@@ -23,7 +24,7 @@ from espnet.nets.beam_search_stochastic import StochasticBeamSearch
 from espnet.nets.beam_search_constrained2 import ConstrainedBeamSearch
 # from espnet.nets.beam_search_constrained3 import ConstrainedBeamSearch
 from espnet.nets.beam_search_cache import CachedBeamSearch
-from espnet.nets.beam_search_keep import KeepBeamSearch
+from espnet.nets.beam_search_keep2 import KeepBeamSearch
 from espnet.nets.beam_search import Hypothesis
 from espnet.nets.pytorch_backend.transformer.subsampling import TooShortUttError
 from espnet.nets.scorer_interface import BatchScorerInterface
@@ -192,8 +193,8 @@ class Speech2Text:
                     vocab_size=len(token_list),
                     token_list=token_list,
                     pre_beam_score_key=None if ctc_weight == 1.0 else "full",
-                    wordlist_file=wordlist_file,
-                    temperature=temperature,
+                    life_thres=life_thres,
+                    hits_thres=hits_thres,
                 )
             elif beam_search_mode == "keep":
                 beam_search = KeepBeamSearch(
@@ -439,6 +440,8 @@ def inference(
     temperature: float,
     beam_search_mode: str,
     wordlist_file: str,
+    life_thres, int,
+    hits_thres, int,
 ):
     assert check_argument_types()
     if batch_size > 1:
@@ -485,6 +488,8 @@ def inference(
         temperature=temperature,
         beam_search_mode=beam_search_mode,
         wordlist_file=wordlist_file
+        life_thres=life_thres,
+        hits_thres=hits_thres,
     )
     speech2text = Speech2Text.from_pretrained(
         model_tag=model_tag,
@@ -537,6 +542,18 @@ def inference(
 
                 if text is not None:
                     ibest_writer["text"][key] = text
+                
+                if n == 1 and beam_search_mode == "keep":
+                    output_str = ""
+                    # for hit in speech2text.beam_search.hits:
+                    #     w, step, windex = hit
+                    #     output_str += f"{w} {step} {windex};"
+                    for hit, c in speech2text.beam_search.hits.items():
+                        w, pos = hit
+                        output_str += f"{w} {pos} {c};"
+                    ibest_writer["hits"][key] = output_str
+
+                    speech2text.beam_search.hits = defaultdict(int)
 
 
 def get_parser():
@@ -647,6 +664,8 @@ def get_parser():
     )
     group.add_argument("--wordlist_file", type=str, default=None, help="The word list for constrained beam search")
     group.add_argument("--beam_size", type=int, default=20, help="Beam size")
+    group.add_argument("--life_thres", type=int, default=4, help="Life time threshold of a cache entry")
+    group.add_argument("--hits_thres", type=int, default=4, help="The number of times of allowed cache hits")
     group.add_argument("--penalty", type=float, default=0.0, help="Insertion penalty")
     group.add_argument(
         "--maxlenratio",

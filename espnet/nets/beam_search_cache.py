@@ -28,50 +28,32 @@ from espnet.nets.beam_search import Hypothesis
 class CacheEntry():
     def __init__(self):
         self.count = 0
-        self.step = 0
+        self.lifetime = 0
     
-    def update(self, new_step):
-        self.step = (self.step * self.count + new_step) / (self.count + 1)
-        self.count += 1        
+    def check(self):
+        self.count += 1
+        return self.count
 
 
 class Cache():
-    def __init__(self, count_thres=4, step_thres=4, n_of_ngram=2):
-        self.count_thres = count_thres
-        self.step_thres = step_thres
-        self.n_of_ngram = n_of_ngram
+    def __init__(self, life_thres=4):
+        self.life_thres = life_thres
+        self.entries = dict()   # word_prefix => cache entry
 
-        self.entries = dict()
-        self.bookkeeping = dict()
-
-    def update(self, ngram, step):
-        entry = self.entries.setdefault(ngram, CacheEntry())
-        entry.update(step)
+    def check(self, word_prefix):
+        entry = self.enties.setdefault(word_prefix, CacheEntry())
+        return entry.check()
     
-    def allow(self, ngram, hyp):
-        if ngram not in self.entries:
-            return True
-        entry = self.entries[ngram]
-        
-        if entry.count > self.count_thres:
-            if ngram in hyp.last_ngrams:
-                return True
-            return False
-        return True
-    
-    def forget(self, cur_step):
-        ngrams_to_forget = []
-        for ngram, entry in self.entries.items():
-            if cur_step - entry.step > self.step_thres:
-                ngrams_to_forget.append(ngram)
-        for ngram in ngrams_to_forget:
-            self.entries.pop(ngram)
-        logging.debug(f"Cache size at step {cur_step} is {len(self.entries)}")
-
-
-class Book():
-    def __init__(self, wordlist):
-        self.wordlist = wordlist
+    def forget(self):
+        to_forget = list()
+        n_entries_before = len(self.entries)
+        for word_prefix, entry in self.entries.items():
+            entry.lifetime += 1
+            if entry.lifetime >= life_thres:
+                to_forget.append(word_prefix)
+        for forget_prefix in to_forget:
+            self.entries.pop(forget_prefix)
+        logging.debug(f"There were {n_entries_before} entries, {len(to_forget)} are forgotten now, {len(self.entries)} are left.")
 
 
 class CachedBeamSearch(BeamSearch):
@@ -88,10 +70,8 @@ class CachedBeamSearch(BeamSearch):
         token_list: List[str] = None,
         pre_beam_ratio: float = 1.5,
         pre_beam_score_key: str = None,
-        wordlist_file: Union[str, None] = None,
-        temperature: float = 1.0,
-        count_thres: int = 3, 
-        step_thres: int = 3
+        life_thres: int = 4,
+        hits_thres: int = 4,
     ):
         """Initialize beam search.
 
@@ -123,11 +103,41 @@ class CachedBeamSearch(BeamSearch):
             pre_beam_score_key=pre_beam_score_key,
         )
 
-        self.cache = Cache(count_thres=3, step_thres=3)
+        self.hits_thres = hits_thres
+        self.cache = Cache(life_thres=life_thres)
 
+    def select_topk(self, running_hyps, hyp_ids, j_ids):
+        topk_hyp_ids = []
+        topk_j_ids = []
+        for i_hyp, j in zip(hyp_ids, j_ids):
+            hyp = running_hyps[i_hyp]
+
+            j_token = self.token_list[j]
+            if j_token.startswith("▁"):
+                new_word_prefix = j_token[1:]
+            else:
+                new_word_prefix = hyp.last_word + j_token
+            
+            rs = self.cache.check(new_word_prefix)
+            if rs <= self.hits_thres:
+                topk_hyp_ids.append(i_hyp)
+                topk_j_ids.append(j)
+            
+                if len(topk_hyp_ids) >= self.beam_size:
+                    break
+        return topk_hyp_ids, topk_j_ids
+    
+    def last_resort(self, topk_hyp_ids, topk_j_ids, running_hyps, hyp_ids, j_ids):
+        seen = set(zip(topk_hyp_ids, topk_j_ids))
+        i = 0
+        while len(topk_hyp_ids) < self.beam_size:
+            if (hyp_ids[i], j_ids[i]) not in seen:
+                topk_hyp_ids.append(hyp_ids[i])
+                topk_j_ids.append(j_ids[i])
+            i += 1
 
     def search(
-        self, running_hyps: List[Hypothesis], x: torch.Tensor, step: int
+        self, running_hyps: List[Hypothesis], x: torch.Tensor
     ) -> List[Hypothesis]:
         """Search new tokens for running hypotheses and encoded speech x.
 
@@ -139,31 +149,15 @@ class CachedBeamSearch(BeamSearch):
             List[Hypotheses]: Best sorted hypotheses
 
         """
-
-        # Every hyp in running_hyps will be extended by |V| tokens.
-        # This will end up with beam_size * vocab_size candidates to do topk sampling
-        # This corresponed to the "step" function here: https://github.com/wouterkool/stochastic-beam-search/blob/34c43a33fd6747eb2e66a0c3cf66c0c5583a9119/fairseq/search.py#L72
-
         lprobs_t = torch.zeros((len(running_hyps), self.n_vocab))
-
-        biased_tmp = torch.full((self.n_vocab,), -1e6)  # -float('inf')
-        biased_tmp[self.eos] = 0
-
-        # At any step, the size of running_hyps should be self.beam_size
-        # if step == 0 and len(running_hyps) == 1:
-        #     lprobs_t[1:, :] = -float('inf')
         things_to_save = []
-
         part_ids = torch.arange(self.n_vocab, device=x.device)  # no pre-beam
         for i_hyp, hyp in enumerate(running_hyps):
-            # Let's compute the score defined by the sequence model.
-            # Basically, the weighted_scores can equal to any normalized distribution
-
+            # scoring
             weighted_scores = torch.zeros(self.n_vocab, dtype=x.dtype, device=x.device)
             scores, states = self.score_full(hyp, x)
             for k in self.full_scorers:
                 weighted_scores += self.weights[k] * scores[k]
-
             # partial scoring
             if self.do_pre_beam:
                 pre_beam_scores = (
@@ -173,17 +167,11 @@ class CachedBeamSearch(BeamSearch):
                 )
                 part_ids = torch.topk(pre_beam_scores, self.pre_beam_size)[1]
             part_scores, part_states = self.score_partial(hyp, part_ids, x)
-
             for k in self.part_scorers:
-                # val = part_scores[k].min().item() - 2.0  # TODO: This 2.0 is a tunable number, which provides an estimates for un-evaluated ctc scores
-                val = -1e10
-                part_scores_full = torch.full((self.n_vocab,), val, device=part_scores[k].device)
-                part_scores_full[part_ids] = part_scores[k]
-                weighted_scores += self.weights[k] * part_scores_full
-            # This is cumulative prob for each candidate
-            # lprobs_t[i_hyp] = hyp.score + F.log_softmax(weighted_scores / self.temperature, dim=-1)
-
-            lprobs_t[i_hyp] = hyp.score + weighted_scores   # no normalization for the sampling distribution
+                temp_scores = torch.full((self.n_vocab,), -float('inf'), device=x.device)
+                temp_scores[part_ids] = self.weights[k] * part_scores[k]
+                weighted_scores += temp_scores
+            lprobs_t[i_hyp] = weighted_scores + hyp.score
 
             things_to_save.append(
                 {
@@ -191,9 +179,8 @@ class CachedBeamSearch(BeamSearch):
                     "states": states,
                 }
             )
-
-        # let's choose top-k from lprobs_t now with some heuristics
-        inflation = 5   # we are allowed to have an inflation when: self.beam_size * inflation < vocab_size
+        
+        inflation = 2
         topk_gs, topk_indices = torch.topk(
             lprobs_t.view(-1),
             k=min(
@@ -206,75 +193,27 @@ class CachedBeamSearch(BeamSearch):
 
         hyp_ids = torch.div(topk_indices, self.n_vocab, rounding_mode='floor').tolist()
         j_ids = torch.remainder(topk_indices, self.n_vocab).tolist()
-
-        decisions = []
-        gap_thres = -10   # similar to D_end
-        best_hyp_score = None
-        for i_hyp, j in zip(hyp_ids, j_ids):   # at most beam_size * inflation candidates
-            hyp = running_hyps[i_hyp]
-            my_hyp_score = hyp.score + lprobs_t[(i_hyp, j)]
-
-            yseq = hyp.yseq[-self.cache.n_of_ngram:].tolist()
-            ngram = tuple(yseq + [j])
-            self.cache.update(ngram, step)
-            
-            cache_allowed = self.cache.allow(ngram, hyp)
-            if cache_allowed and best_hyp_score is None:
-                best_hyp_score = my_hyp_score
-
-            # TODO: bookkeeper's decision            
-
-            decisions.append(cache_allowed)
-
-            if best_hyp_score is not None and my_hyp_score - best_hyp_score < gap_thres:
-                break
         
-        exception_count = max(self.beam_size - sum(decisions), 0)
-            
-        new_hyp_ids = []
-        new_j_ids = []
-        ij_added = set()
-        for i_hyp, j, decision_ij in zip(hyp_ids, j_ids, decisions):
-            if decision_ij or exception_count > 0:
-                new_hyp_ids.append(i_hyp)
-                new_j_ids.append(j)
-                exception_count -= 1
-                ij_added.add((i_hyp, j))
-
-                if len(new_hyp_ids) >= self.beam_size:
-                    break
-        
-        # Last resort, don't waste space in the beam
-        if len(new_hyp_ids) < self.beam_size:
-            for i_hyp, j in zip(hyp_ids, j_ids):
-                if (i_hyp, j) not in ij_added:
-                    new_hyp_ids.append(i_hyp)
-                    new_j_ids.append(j)
-                    if len(new_hyp_ids) >= self.beam_size:
-                        break
-        hyp_ids = new_hyp_ids
-        j_ids = new_j_ids
+        # select your top-k among the many candidates
+        # hyp_ids = hyp_ids[:self.beam_size]
+        # j_ids = j_ids[:self.beam_size]
+        topk_hyp_ids, topk_j_ids = self.select_topk(running_hyps, hyp_ids, j_ids)
+        if len(topk_hyp_ids) < self.beam_size:
+            self.last_resort(topk_hyp_ids, topk_j_ids, running_hyps, hyp_ids, j_ids)
 
         grouped_ids = defaultdict(list)
-        for i_hyp, j in zip(hyp_ids, j_ids):
+        for i_hyp, j in zip(topk_hyp_ids, topk_j_ids):
             grouped_ids[i_hyp].append(j)
 
         best_hyps = []
+        # update hyps
         for i_hyp, part_ids in grouped_ids.items():
-            # Let's compute the scores again, 
-            # but this time, we actually know which id to choose.
             hyp = running_hyps[i_hyp]
-
-            if step > 0 and hyp.yseq[-1] == self.eos:
-                best_hyps.append(hyp)
-                continue
-
             scores, states = things_to_save[i_hyp]["scores"], things_to_save[i_hyp]["states"]
-            
+
             part_ids = torch.tensor(part_ids)
             part_scores, part_states = self.score_partial(hyp, part_ids, x)
 
-            # update hyps
             for part_j, j in enumerate(part_ids):
                 new_scores = self.merge_scores(
                     hyp.scores, scores, j, part_scores, part_j
@@ -284,104 +223,33 @@ class CachedBeamSearch(BeamSearch):
                     new_word_score_k = v - hyp.scores[k]
                     my_token_scores_seperate[k] = new_word_score_k
 
-                yseq = hyp.yseq[-self.cache.n_of_ngram:].tolist()
-                ngram = tuple(yseq + [j])
+                j_token = self.token_list[j]
+                if j_token.startswith("▁"):
+                    last_word = j_token
+                else:
+                    last_word = hyp.last_word + j
 
-                new_hyp= Hypothesis(
-                    score=lprobs_t[i_hyp, j],
-                    yseq=self.append_token(hyp.yseq, j),
-                    scores=new_scores,
-                    states=self.merge_states(states, part_states, part_j),
-                    token_scores=hyp.token_scores + [weighted_scores[j] - hyp.score],
-                    token_scores_seperate=hyp.token_scores_seperate + [my_token_scores_seperate],
-                    last_ngrams=hyp.last_ngrams[-9:] + [ngram],
-                )
-
+                # will be (2 x beam at most)
                 best_hyps.append(
-                    new_hyp
+                    Hypothesis(
+                        score=lprobs_t[i_hyp, j],   # p(h,w | x) = p( h | x) * p(w|h,x)
+                        yseq=self.append_token(hyp.yseq, j),
+                        scores=new_scores,
+                        states=self.merge_states(states, part_states, part_j),
+                        token_scores=hyp.token_scores + [weighted_scores[j] - hyp.score],
+                        token_scores_seperate=hyp.token_scores_seperate + [my_token_scores_seperate],
+                        last_word_start=len(hyp.yseq) if j_token.startswith("▁") else hyp.last_word_start,
+                        last_word=last_word,
+                    )
                 )
 
+        # sort and prune 2 x beam -> beam
         best_hyps = sorted(best_hyps, key=lambda x: x.score, reverse=True)[
             : min(len(best_hyps), self.beam_size)
         ]
+        self.cache.forget()
 
-        self.cache.forget(step)
         return best_hyps
+    
 
-    def forward(
-        self, x: torch.Tensor, maxlenratio: float = 0.0, minlenratio: float = 0.0
-    ) -> List[Hypothesis]:
-        """Perform beam search.
-
-        Args:
-            x (torch.Tensor): Encoded speech feature (T, D)
-            maxlenratio (float): Input length ratio to obtain max output length.
-                If maxlenratio=0.0 (default), it uses a end-detect function
-                to automatically find maximum hypothesis lengths
-                If maxlenratio<0.0, its absolute value is interpreted
-                as a constant max output length.
-            minlenratio (float): Input length ratio to obtain min output length.
-
-        Returns:
-            list[Hypothesis]: N-best decoding results
-
-        """
-        # set length bounds
-        if maxlenratio == 0:
-            maxlen = x.shape[0]
-        elif maxlenratio < 0:
-            maxlen = -1 * int(maxlenratio)
-        else:
-            maxlen = max(1, int(maxlenratio * x.size(0)))
-        minlen = int(minlenratio * x.size(0))
-        logging.info("decoder input length: " + str(x.shape[0]))
-        logging.info("max output length: " + str(maxlen))
-        logging.info("min output length: " + str(minlen))
-
-        # main loop of prefix search
-        running_hyps = self.init_hyp(x)
-        ended_hyps = []
-        for i in range(maxlen):
-            logging.debug("position " + str(i))
-            best = self.search(running_hyps, x, i)
-            # post process of one iteration
-            running_hyps = self.post_process(i, maxlen, maxlenratio, best, ended_hyps)
-            # end detection
-            if maxlenratio == 0.0 and end_detect([h.asdict() for h in ended_hyps], i):
-                logging.info(f"end detected at {i}")
-                break
-            if len(running_hyps) == 0:
-                logging.info("no hypothesis. Finish decoding.")
-                break
-            else:
-                logging.debug(f"remained hypotheses: {len(running_hyps)}")
-
-        nbest_hyps = sorted(ended_hyps, key=lambda x: x.score, reverse=True)
-        # check the number of hypotheses reaching to eos
-        if len(nbest_hyps) == 0:
-            logging.warning(
-                "there is no N-best results, perform recognition "
-                "again with smaller minlenratio."
-            )
-            return (
-                []
-                if minlenratio < 0.1
-                else self.forward(x, maxlenratio, max(0.0, minlenratio - 0.1))
-            )
-
-        # report the best result
-        best = nbest_hyps[0]
-        for k, v in best.scores.items():
-            logging.info(
-                f"{v:6.2f} * {self.weights[k]:3} = {v * self.weights[k]:6.2f} for {k}"
-            )
-        logging.info(f"total log probability: {best.score:.2f}")
-        logging.info(f"normalized log probability: {best.score / len(best.yseq):.2f}")
-        logging.info(f"total number of ended hypotheses: {len(nbest_hyps)}")
-        if self.token_list is not None:
-            logging.info(
-                "best hypo: "
-                + "".join([self.token_list[x] for x in best.yseq[1:-1]])
-                + "\n"
-            )
-        return nbest_hyps
+    

@@ -1,6 +1,7 @@
 """Beam search module."""
 
 from collections import defaultdict
+from dataclasses import fields
 from itertools import chain
 import logging
 from mimetypes import init
@@ -78,12 +79,15 @@ class KeepBeamSearch(BeamSearch):
                     line = line.strip()
                     if len(line) == 0:
                         continue
-                    w = line.split()[0]
+                    fields = line.split()
+                    if len(fields) != 2:
+                        continue
+                    w = fields[1]  # (kwid, kw), only consider one word query now
                     self.word_list.add(w)
-        
-        self.hits = list()
+        logging.info(f"There are {len(self.word_list)} words in the word list")
 
-    
+        self.hits = defaultdict(int)
+
     def search(
         self, running_hyps: List[Hypothesis], x: torch.Tensor
     ) -> List[Hypothesis]:
@@ -97,10 +101,9 @@ class KeepBeamSearch(BeamSearch):
             List[Hypotheses]: Best sorted hypotheses
 
         """
-        lprobs_t = torch.zeros((len(running_hyps), self.n_vocab))
-        things_to_save = []
+        best_hyps = []
         part_ids = torch.arange(self.n_vocab, device=x.device)  # no pre-beam
-        for i_hyp, hyp in enumerate(running_hyps):
+        for hyp in running_hyps:    # accumulated in this 
             # scoring
             weighted_scores = torch.zeros(self.n_vocab, dtype=x.dtype, device=x.device)
             scores, states = self.score_full(hyp, x)
@@ -116,10 +119,12 @@ class KeepBeamSearch(BeamSearch):
                 part_ids = torch.topk(pre_beam_scores, self.pre_beam_size)[1]
             part_scores, part_states = self.score_partial(hyp, part_ids, x)
             for k in self.part_scorers:
-                temp_scores = torch.full((self.n_vocab,), -float('inf'), device=x.device)
-                temp_scores[part_ids] = self.weights[k] * part_scores[k]
-                weighted_scores += temp_scores
-            lprobs_t[i_hyp] = weighted_scores + hyp.score
+                weighted_scores[part_ids] += self.weights[k] * part_scores[k]
+            # apply temperature and normalization
+            # if self.temperature != 1.0:
+            #     weighted_scores = F.log_softmax(weighted_scores / self.temperature, dim=-1)
+            # add previous hyp score
+            weighted_scores += hyp.score   # p( h | x) * (p1(w|h,x), p2(w|h,x), p3(w|h,x))
 
             for part_j in part_ids.tolist():
                 part_j_token = self.token_list[part_j]
@@ -129,45 +134,12 @@ class KeepBeamSearch(BeamSearch):
                     prev_word = prev_word[1:]  # remove the starting symbol of word pieces
                     if prev_word in self.word_list:
                         # (hit word, step, word index)
-                        self.hits.append((prev_word, len(hyp.yseq), max(hyp.word_count - 1, 0)))
+                        # self.hits.append((prev_word, len(hyp.yseq), max(hyp.word_count - 1, 0)))
+                        pos = max(hyp.word_count - 1, 0)
+                        self.hits[(prev_word, pos)] += 1
 
-            things_to_save.append(
-                {
-                    "scores": scores,
-                    "states": states,
-                }
-            )
-        
-        inflation = 1
-        topk_gs, topk_indices = torch.topk(
-            lprobs_t.view(-1),
-            k=min(
-                # Take the best 2 x beam_size predictions. We'll choose the first
-                # beam_size of these which don't predict eos to continue with.
-                self.beam_size * inflation,
-                lprobs_t.view(len(running_hyps), -1).size(1),
-            ),
-        )
-
-        hyp_ids = torch.div(topk_indices, self.n_vocab, rounding_mode='floor').tolist()
-        j_ids = torch.remainder(topk_indices, self.n_vocab).tolist()
-        hyp_ids = hyp_ids[:self.beam_size]
-        j_ids = j_ids[:self.beam_size]
-
-        grouped_ids = defaultdict(list)
-        for i_hyp, j in zip(hyp_ids, j_ids):
-            grouped_ids[i_hyp].append(j)
-
-        best_hyps = []
-        # update hyps
-        for i_hyp, part_ids in grouped_ids.items():
-            hyp = running_hyps[i_hyp]
-            scores, states = things_to_save[i_hyp]["scores"], things_to_save[i_hyp]["states"]
-
-            part_ids = torch.tensor(part_ids)
-            part_scores, part_states = self.score_partial(hyp, part_ids, x)
-
-            for part_j, j in enumerate(part_ids):
+            # update hyps
+            for j, part_j in zip(*self.beam(weighted_scores, part_ids)):
                 new_scores = self.merge_scores(
                     hyp.scores, scores, j, part_scores, part_j
                 )
@@ -176,12 +148,18 @@ class KeepBeamSearch(BeamSearch):
                     new_word_score_k = v - hyp.scores[k]
                     my_token_scores_seperate[k] = new_word_score_k
 
+                # Compute the normalization terms for the loglinear interpolation.
+                # This is hard-wired to a specific setting. Please be careful when changing to another model
+                # ac = scores['decoder'] * self.weights['decoder'] + part_scores['ctc'] * self.weights['ctc']
+                # my_token_scores_seperate["ac"] = torch.exp(ac).sum().log()
+                # my_token_scores_seperate["all"] = torch.exp(ac + scores['lm'][full_prev_hyp_id] * self.weights['lm']).sum().log()
+
                 j_token = self.token_list[j]
 
                 # will be (2 x beam at most)
                 best_hyps.append(
                     Hypothesis(
-                        score=lprobs_t[i_hyp, j],
+                        score=weighted_scores[j],   # p(h,w | x) = p( h | x) * p(w|h,x)
                         yseq=self.append_token(hyp.yseq, j),
                         scores=new_scores,
                         states=self.merge_states(states, part_states, part_j),
@@ -191,11 +169,15 @@ class KeepBeamSearch(BeamSearch):
                         word_count=hyp.word_count + 1 if j_token.startswith("▁") else hyp.word_count,
                     )
                 )
+                # if np.isnan(best_hyps[-1].states["ctc"][1].sum()):
+                #     logging.error("here")
 
-        # sort and prune 2 x beam -> beam
-        best_hyps = sorted(best_hyps, key=lambda x: x.score, reverse=True)[
-            : min(len(best_hyps), self.beam_size)
-        ]
+            # sort and prune 2 x beam -> beam
+            best_hyps = sorted(best_hyps, key=lambda x: x.score, reverse=True)[
+                : min(len(best_hyps), self.beam_size)
+            ]
 
+            # sorted_hyps = sorted(best_hyps, key=lambda x: x.score, reverse=True)
+            # temperature = 
+            # best_hyps = 
         return best_hyps
-    

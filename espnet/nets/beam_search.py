@@ -31,10 +31,12 @@ class Hypothesis(NamedTuple):
     token_scores: List[Union[float, torch.Tensor]] = list()
     token_scores_seperate: List[Dict[str, Union[float, torch.Tensor]]] = list()
     last_word_start: int = 0
+    last_word: str = ""
     word_score: Union[float, torch.Tensor] = 0
-    id: int = None
-    last_ngrams: List[Tuple[int]] = []
-    hit_word: str = None
+    # id: int = None
+    # last_ngrams: List[Tuple[int]] = []
+    # hit_word: str = None
+    word_count: int = 0
 
     def asdict(self) -> dict:
         """Convert data to JSON-friendly dict."""
@@ -439,6 +441,10 @@ class BeamSearch(torch.nn.Module):
                 if minlenratio < 0.1
                 else self.forward(x, maxlenratio, max(0.0, minlenratio - 0.1))
             )
+        
+        if hasattr(self, 'hits'):
+            # nw = len(set([h[0] for h in self.hits]))
+            logging.info(f"There are {len(self.hits)} hits: {str(self.hits)}")
 
         # report the best result
         best = nbest_hyps[0]
