@@ -118,6 +118,7 @@ class ConstrainedBeamSearch(BeamSearch):
             token_list=token_list,
             pre_beam_ratio=pre_beam_ratio,
             pre_beam_score_key=pre_beam_score_key,
+            temperature=temperature
         )
 
         self.word_list = dict()
@@ -181,7 +182,7 @@ class ConstrainedBeamSearch(BeamSearch):
     def constraints_satisfied_post_process(self, hyp, constraints_satisfied):
         hyp_word_scores = []
         satisfied_scores = []
-        weight = 1.0
+        weight = 2.5
         for i, cs_val in enumerate(constraints_satisfied):
             satisfied_scores.append(0)
             if cs_val[0] is None:
@@ -268,13 +269,25 @@ class ConstrainedBeamSearch(BeamSearch):
                 part_ids = torch.topk(pre_beam_scores, self.pre_beam_size)[1]
  
                 constraints_satisfied = self.check_extension(hyp, part_ids.tolist())
-                hyp_word_scores, satisfied_scores = self.constraints_satisfied_post_process(hyp, constraints_satisfied)
+                # hyp_word_scores, satisfied_scores = self.constraints_satisfied_post_process(hyp, constraints_satisfied)
                 # hyp_word_scores, satisfied_scores = self.constraints_satisfied_post_process2(hyp, constraints_satisfied)
-                weighted_scores[part_ids] += torch.tensor(satisfied_scores, dtype=weighted_scores.dtype)
+                # weighted_scores[part_ids] += torch.tensor(satisfied_scores, dtype=weighted_scores.dtype)
  
             part_scores, part_states = self.score_partial(hyp, part_ids, x)
             for k in self.part_scorers:
-                weighted_scores[part_ids] += self.weights[k] * part_scores[k]
+                val = part_scores[k].min().item() - 2.0
+                part_scores_full = torch.full((self.n_vocab,), val, device=part_scores[k].device)
+                part_scores_full[part_ids] = part_scores[k]
+                weighted_scores += self.weights[k] * part_scores_full
+
+            if self.temperature != 1.0:
+                weighted_scores = F.log_softmax(weighted_scores / self.temperature, dim=-1)
+
+            if self.do_pre_beam:
+                hyp_word_scores, satisfied_scores = self.constraints_satisfied_post_process(hyp, constraints_satisfied)
+                # hyp_word_scores, satisfied_scores = self.constraints_satisfied_post_process2(hyp, constraints_satisfied)
+                weighted_scores[part_ids] += torch.tensor(satisfied_scores, dtype=weighted_scores.dtype)
+
             # add previous hyp score
             weighted_scores += hyp.score   # p( h | x) * (p1(w|h,x), p2(w|h,x), p3(w|h,x))
 

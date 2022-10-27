@@ -33,6 +33,8 @@ class Hypothesis(NamedTuple):
     last_word_start: int = 0
     word_score: Union[float, torch.Tensor] = 0
     id: int = None
+    last_ngrams: List[Tuple[int]] = []
+    hit_word: str = None
 
     def asdict(self) -> dict:
         """Convert data to JSON-friendly dict."""
@@ -334,8 +336,8 @@ class BeamSearch(torch.nn.Module):
             for k in self.part_scorers:
                 weighted_scores[part_ids] += self.weights[k] * part_scores[k]
             # apply temperature and normalization
-            if self.temperature != 1.0:
-                weighted_scores = F.log_softmax(weighted_scores / self.temperature, dim=-1)
+            # if self.temperature != 1.0:
+            #     weighted_scores = F.log_softmax(weighted_scores / self.temperature, dim=-1)
             # add previous hyp score
             weighted_scores += hyp.score   # p( h | x) * (p1(w|h,x), p2(w|h,x), p3(w|h,x))
 

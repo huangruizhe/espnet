@@ -21,6 +21,9 @@ from espnet.nets.beam_search import BeamSearch
 from espnet.nets.beam_search_stochastic import StochasticBeamSearch
 # from espnet.nets.beam_search_constrained import ConstrainedBeamSearch
 from espnet.nets.beam_search_constrained2 import ConstrainedBeamSearch
+# from espnet.nets.beam_search_constrained3 import ConstrainedBeamSearch
+from espnet.nets.beam_search_cache import CachedBeamSearch
+from espnet.nets.beam_search_keep import KeepBeamSearch
 from espnet.nets.beam_search import Hypothesis
 from espnet.nets.pytorch_backend.transformer.subsampling import TooShortUttError
 from espnet.nets.scorer_interface import BatchScorerInterface
@@ -82,7 +85,7 @@ class Speech2Text:
         streaming: bool = False,
         temperature: float = 1.0,
         beam_search_mode: str = "topk",
-        wordlist_file: str = None,
+        wordlist_file: str = "",
     ):
         assert check_argument_types()
 
@@ -167,6 +170,33 @@ class Speech2Text:
                 )
             elif beam_search_mode == "constrained":
                 beam_search = ConstrainedBeamSearch(
+                    beam_size=beam_size,
+                    weights=weights,
+                    scorers=scorers,
+                    sos=asr_model.sos,
+                    eos=asr_model.eos,
+                    vocab_size=len(token_list),
+                    token_list=token_list,
+                    pre_beam_score_key=None if ctc_weight == 1.0 else "full",
+                    wordlist_file=wordlist_file,
+                    temperature=temperature,
+                )
+                logging.info(f"wordlist_file = {wordlist_file}")
+            elif beam_search_mode == "cached":
+                beam_search = CachedBeamSearch(
+                    beam_size=beam_size,
+                    weights=weights,
+                    scorers=scorers,
+                    sos=asr_model.sos,
+                    eos=asr_model.eos,
+                    vocab_size=len(token_list),
+                    token_list=token_list,
+                    pre_beam_score_key=None if ctc_weight == 1.0 else "full",
+                    wordlist_file=wordlist_file,
+                    temperature=temperature,
+                )
+            elif beam_search_mode == "keep":
+                beam_search = KeepBeamSearch(
                     beam_size=beam_size,
                     weights=weights,
                     scorers=scorers,
@@ -612,7 +642,7 @@ def get_parser():
         "--beam_search_mode", 
         type=str, 
         default="topk",
-        choices=("topk", "sampling", "stochastic", "standard", "interpolation", "constrained"),
+        choices=("topk", "sampling", "stochastic", "standard", "interpolation", "constrained", "cached", "keep"),
         help="Beam search mode"
     )
     group.add_argument("--wordlist_file", type=str, default=None, help="The word list for constrained beam search")
